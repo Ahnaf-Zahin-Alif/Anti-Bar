@@ -88,7 +88,8 @@ body,
 
 .dock-pill {
   position: relative;
-  display: flex;
+  display: inline-flex;
+  flex-shrink: 0;
   align-items: center;
   gap: 8px;
   padding: 8px 14px;
@@ -412,6 +413,7 @@ body,
   bottom: 92px;
   right: 16px;
   width: 312px;
+  max-width: calc(100vw - 16px);
   max-height: 264px;
   overflow-y: auto;
   background: var(--popover-bg);

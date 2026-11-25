@@ -45,14 +45,40 @@ pub fn snap_widget_position(dragged: WidgetRect, others: &[WidgetRect], threshol
     (best_x, best_y)
 }
 
-/// Parses VEVENT SUMMARY and DTSTART fields from an iCalendar (.ics) payload.
+pub fn parse_https_url(url: &str) -> Option<(String, String)> {
+    let trimmed = url.trim();
+    let rest = trimmed.strip_prefix("https://")?;
+    if rest.is_empty() {
+        return None;
+    }
+    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let host = host.trim();
+    if host.is_empty() || host.contains(char::is_whitespace) {
+        return None;
+    }
+    Some((host.to_string(), format!("/{}", path)))
+}
+
+/// Parses VEVENT SUMMARY and DTSTART fields from an iCalendar (.ics) payload, unfolding RFC 5545 folded lines.
 pub fn parse_ics_events(ics_text: &str) -> Vec<IcsEvent> {
+    let mut unfolded = Vec::<String>::new();
+    for raw in ics_text.lines() {
+        let line = raw.trim_end_matches('\r');
+        if let Some(cont) = line.strip_prefix(' ').or_else(|| line.strip_prefix('\t')) {
+            if let Some(last) = unfolded.last_mut() {
+                last.push_str(cont);
+                continue;
+            }
+        }
+        unfolded.push(line.to_string());
+    }
+
     let mut events = Vec::new();
     let mut in_event = false;
     let mut summary = String::new();
     let mut dtstart = String::new();
 
-    for raw in ics_text.lines() {
+    for raw in unfolded {
         let line = raw.trim();
         if line.eq_ignore_ascii_case("BEGIN:VEVENT") {
             in_event = true;
@@ -67,10 +93,15 @@ pub fn parse_ics_events(ics_text: &str) -> Vec<IcsEvent> {
             }
             in_event = false;
         } else if in_event {
-            if let Some(val) = line.strip_prefix("SUMMARY:") {
-                summary = val.trim().to_string();
-            } else if let Some((_, val)) = line.split_once(':') {
-                if line.starts_with("DTSTART") {
+            if let Some((prop, val)) = line.split_once(':') {
+                let name = prop.split(';').next().unwrap_or("").trim();
+                if name.eq_ignore_ascii_case("SUMMARY") {
+                    summary = val
+                        .trim()
+                        .replace("\\n", " ")
+                        .replace("\\,", ",")
+                        .replace("\\;", ";");
+                } else if name.eq_ignore_ascii_case("DTSTART") {
                     dtstart = val.trim().to_string();
                 }
             }

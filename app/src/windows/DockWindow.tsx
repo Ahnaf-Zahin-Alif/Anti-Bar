@@ -33,6 +33,7 @@ import {
   AudioOutputDevice,
   AudioSessionInfo,
   DownloadEntry,
+  IcsEvent,
   NotificationsSnapshot,
   RunningWindow,
   SystemStatus,
@@ -40,40 +41,22 @@ import {
   WifiNetwork,
 } from "../types";
 import { STRINGS } from "../i18n";
+import {
+  buildMonthCells,
+  computeDockDimensions,
+  isValidHttpsUrl,
+  toLocalDateKey,
+} from "../utils";
 
 type PopoverKind = "none" | "mixer" | "hidden" | "downloads" | "control" | "calendar";
 
 const WEEK_DAYS = ["M", "T", "W", "T", "F", "S", "S"];
 
-function buildMonthCells(year: number, month: number) {
-  const firstDay = new Date(year, month, 1);
-  // Monday-first offset: Sun(0) -> 6, Mon(1) -> 0
-  const startOffset = (firstDay.getDay() + 6) % 7;
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const prevMonthDays = new Date(year, month, 0).getDate();
-  const cells: { day: number; inMonth: boolean; key: string; dateStr: string }[] = [];
-
-  for (let i = 0; i < 42; i++) {
-    const dayNum = i - startOffset + 1;
-    if (dayNum <= 0) {
-      const d = prevMonthDays + dayNum;
-      const dt = new Date(year, month - 1, d);
-      cells.push({ day: d, inMonth: false, key: `p-${i}`, dateStr: dt.toISOString().slice(0, 10) });
-    } else if (dayNum > daysInMonth) {
-      const d = dayNum - daysInMonth;
-      const dt = new Date(year, month + 1, d);
-      cells.push({ day: d, inMonth: false, key: `n-${i}`, dateStr: dt.toISOString().slice(0, 10) });
-    } else {
-      const dt = new Date(year, month, dayNum);
-      cells.push({ day: dayNum, inMonth: true, key: `c-${dayNum}`, dateStr: dt.toISOString().slice(0, 10) });
-    }
-  }
-  return cells;
-}
-
 export function DockWindow() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [windows, setWindows] = useState<RunningWindow[]>([]);
+  const [windowsLoaded, setWindowsLoaded] = useState(false);
+  const [measuredPillWidth, setMeasuredPillWidth] = useState(0);
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
   const [previewData, setPreviewData] = useState<{ hwnd: number; img: string | null } | null>(null);
   const [fullscreenHidden, setFullscreenHidden] = useState(false);
@@ -82,6 +65,8 @@ export function DockWindow() {
   const [audioSessions, setAudioSessions] = useState<AudioSessionInfo[]>([]);
   const [audioOutputs, setAudioOutputs] = useState<AudioOutputDevice[]>([]);
   const [wifiNets, setWifiNets] = useState<WifiNetwork[]>([]);
+  const [icsEvents, setIcsEvents] = useState<IcsEvent[]>([]);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [notifications, setNotifications] = useState<NotificationsSnapshot>({ status: "unspecified", items: [] });
   const [sysStatus, setSysStatus] = useState<SystemStatus>({
     batteryPercent: 100,
@@ -91,16 +76,28 @@ export function DockWindow() {
   const [trash, setTrash] = useState<TrashInfo>({ items: 0, sizeBytes: 0 });
   const [nowDate, setNowDate] = useState(() => new Date());
   const [calMonth, setCalMonth] = useState(() => ({ year: new Date().getFullYear(), month: new Date().getMonth() }));
-  const [selectedDateStr, setSelectedDateStr] = useState(() => new Date().toISOString().slice(0, 10));
+  const [selectedDateStr, setSelectedDateStr] = useState(() => toLocalDateKey(new Date()));
 
+  const pillRef = useRef<HTMLDivElement | null>(null);
   const previewTimerRef = useRef<number | null>(null);
   const leaveTimerRef = useRef<number | null>(null);
 
+  const reportError = (msg: unknown) => {
+    const text = typeof msg === "string" ? msg : msg instanceof Error ? msg.message : "Action failed";
+    setActionError(text);
+    window.setTimeout(() => setActionError((prev) => (prev === text ? null : prev)), 2500);
+  };
+
   useEffect(() => {
-    invoke<AppConfig>("get_config").then(setConfig).catch(console.error);
+    invoke<AppConfig>("get_config").then(setConfig).catch(reportError);
     const refreshWindows = () => {
       if (document.hidden) return;
-      invoke<RunningWindow[]>("get_running_windows").then(setWindows).catch(() => {});
+      invoke<RunningWindow[]>("get_running_windows")
+        .then((list) => {
+          setWindows(list);
+          setWindowsLoaded(true);
+        })
+        .catch(() => setWindowsLoaded(true));
     };
     const refreshSlow = () => {
       if (document.hidden) return;
@@ -118,6 +115,8 @@ export function DockWindow() {
       clearInterval(fastTimer);
       clearInterval(slowTimer);
       clearInterval(clockTimer);
+      if (previewTimerRef.current) window.clearTimeout(previewTimerRef.current);
+      if (leaveTimerRef.current) window.clearTimeout(leaveTimerRef.current);
       unlistenCfg.then((u) => u());
       unlistenFs.then((u) => u());
     };
@@ -161,30 +160,41 @@ export function DockWindow() {
   const iconSize = config?.iconSize || 48;
   const maxScale = config?.magnification || 1.38;
 
-  const dockWidth = useMemo(() => {
-    const slotCount = Math.max(items.length, 1) + 3;
-    const extraClock = config?.showDockClock ? 102 : 0;
-    const baseWidth = slotCount * (iconSize + 8) + 86 + extraClock;
-    if (popover === "calendar") return Math.min(Math.max(baseWidth, 540), 960);
-    if (popover !== "none") return Math.min(Math.max(baseWidth, 380), 960);
-    if (hoveredItem) return Math.min(Math.max(baseWidth, 340), 960);
-    return Math.min(Math.max(baseWidth, 300), 960);
-  }, [items.length, iconSize, popover, hoveredItem, config?.showDockClock]);
+  useEffect(() => {
+    const el = pillRef.current;
+    if (!el) return;
+    const measure = () => {
+      const w = Math.ceil(el.getBoundingClientRect().width);
+      if (w > 0) setMeasuredPillWidth(w);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [config, items.length, iconSize]);
 
-  const dockHeight = useMemo(() => {
-    if (popover !== "none") return 416;
-    if (hoveredItem) return 274;
-    return 108;
-  }, [popover, hoveredItem]);
+  const { width: dockWidth, height: dockHeight } = useMemo(
+    () =>
+      computeDockDimensions({
+        itemCount: items.length,
+        iconSize,
+        measuredPillWidth,
+        showDockClock: Boolean(config?.showDockClock),
+        popover,
+        hasPreview: Boolean(hoveredItem),
+        maxScreenWidth: window.screen?.availWidth || 1920,
+      }),
+    [items.length, iconSize, measuredPillWidth, config?.showDockClock, popover, hoveredItem]
+  );
 
   useEffect(() => {
-    if (!config) return;
+    if (!config || !windowsLoaded) return;
     invoke("resize_overlay", {
       label: "dock",
       width: dockWidth,
       height: dockHeight,
     }).catch(() => {});
-  }, [config, dockWidth, dockHeight]);
+  }, [config, windowsLoaded, dockWidth, dockHeight]);
 
   if (!config) return null;
   if (config.hideInFullscreen && fullscreenHidden) return null;
@@ -249,8 +259,17 @@ export function DockWindow() {
       setWifiNets(await invoke<WifiNetwork[]>("get_wifi_networks"));
       setSysStatus(await invoke<SystemStatus>("get_system_status"));
     } else if (resolved === "calendar") {
-      const snap = await invoke<NotificationsSnapshot>("get_notifications", { requestAccess: true });
+      const snap = await invoke<NotificationsSnapshot>("get_notifications", { requestAccess: true }).catch(
+        (): NotificationsSnapshot => ({ status: "unsupported", items: [] })
+      );
       setNotifications(snap);
+      if (config && isValidHttpsUrl(config.calendarIcsUrl)) {
+        invoke<IcsEvent[]>("fetch_ics_agenda", { url: config.calendarIcsUrl })
+          .then(setIcsEvents)
+          .catch(() => {});
+      } else {
+        setIcsEvents([]);
+      }
     }
   };
 
@@ -258,32 +277,44 @@ export function DockWindow() {
     setAudioSessions((prev) =>
       prev.map((s) => (s.pid === sess.pid && s.isMaster === sess.isMaster ? { ...s, volume: vol, muted } : s))
     );
-    await invoke("set_app_volume", { pid: sess.pid, isMaster: sess.isMaster, volume: vol, muted });
+    await invoke("set_app_volume", { pid: sess.pid, isMaster: sess.isMaster, volume: vol, muted }).catch(reportError);
   };
 
   const switchOutput = async (deviceId: string) => {
-    await invoke("set_audio_output", { deviceId }).catch(() => {});
+    await invoke("set_audio_output", { deviceId }).catch(reportError);
     const [sess, outs] = await Promise.all([
-      invoke<AudioSessionInfo[]>("get_audio_sessions"),
-      invoke<AudioOutputDevice[]>("get_audio_outputs"),
+      invoke<AudioSessionInfo[]>("get_audio_sessions").catch(() => []),
+      invoke<AudioOutputDevice[]>("get_audio_outputs").catch(() => []),
     ]);
     setAudioSessions(sess);
     setAudioOutputs(outs);
   };
 
   const calCells = buildMonthCells(calMonth.year, calMonth.month);
-  const todayStr = nowDate.toISOString().slice(0, 10);
+  const todayStr = toLocalDateKey(nowDate);
   const monthLabel = new Date(calMonth.year, calMonth.month, 1).toLocaleDateString(undefined, {
     month: "long",
     year: "numeric",
   });
   const dayAgenda = config.agendaItems.filter((a) => a.date === selectedDateStr);
+  const compactKey = selectedDateStr.replace(/-/g, "");
+  const dayIcsEvents = icsEvents.filter((e) => !e.dtstart || e.dtstart.startsWith(compactKey));
+  const previewLeft =
+    hoveredIdx !== null
+      ? Math.max(8, Math.min(dockWidth - 252, Math.round(36 + hoveredIdx * (iconSize + 8) + iconSize / 2 - 122)))
+      : 8;
 
   return (
     <div className={`dock-shell theme-${config.theme}`}>
+      {actionError && (
+        <div className="dock-tooltip" style={{ opacity: 1, bottom: 96, transform: "none" }}>
+          {actionError}
+        </div>
+      )}
       {popover === "none" && hoveredItem && (
         <div
           className="dock-preview-card"
+          style={{ left: previewLeft }}
           onMouseEnter={handleDockEnter}
           onMouseLeave={handleDockLeave}
         >
@@ -442,12 +473,12 @@ export function DockWindow() {
             </button>
             <button
               className="dl-entry"
-              onClick={() => invoke("open_trash")}
+              title="Left click to open, right click to empty"
+              onClick={() => invoke("open_trash").catch(reportError)}
               onContextMenu={(e) => {
                 e.preventDefault();
-                invoke("empty_trash");
+                invoke("empty_trash").catch(reportError);
               }}
-              title="Left click to open, right click to empty"
             >
               <Trash2 size={14} />
               <span>
@@ -547,15 +578,24 @@ export function DockWindow() {
               })}
             </div>
             <div style={{ marginTop: 10, paddingTop: 8, borderTop: "1px solid var(--line-subtle)", fontSize: 11 }}>
-              <div style={{ fontWeight: 600, marginBottom: 4 }}>Agenda ({dayAgenda.length})</div>
-              {dayAgenda.length === 0 ? (
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                Agenda ({dayAgenda.length + dayIcsEvents.length})
+              </div>
+              {dayAgenda.length === 0 && dayIcsEvents.length === 0 ? (
                 <div className="muted-label">No items for {selectedDateStr}</div>
               ) : (
-                dayAgenda.slice(0, 3).map((a) => (
-                  <div key={a.id} className="muted-label">
-                    {a.time} · {a.title}
-                  </div>
-                ))
+                <>
+                  {dayAgenda.slice(0, 2).map((a) => (
+                    <div key={a.id} className="muted-label" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {a.time} · {a.title}
+                    </div>
+                  ))}
+                  {dayIcsEvents.slice(0, 2).map((ev, i) => (
+                    <div key={`${ev.dtstart}-${i}`} className="muted-label" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {ev.summary}
+                    </div>
+                  ))}
+                </>
               )}
             </div>
           </div>
@@ -695,16 +735,16 @@ export function DockWindow() {
             )}
           </div>
           <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-            <button className="icon-btn" style={{ flex: 1, gap: 6 }} onClick={() => invoke("run_power_action", { action: "wifi" })}>
+            <button className="icon-btn" style={{ flex: 1, gap: 6 }} onClick={() => invoke("run_power_action", { action: "wifi" }).catch(reportError)}>
               <Wifi size={14} /> Wi-Fi
             </button>
-            <button className="icon-btn" style={{ flex: 1, gap: 6 }} onClick={() => invoke("run_power_action", { action: "bluetooth" })}>
+            <button className="icon-btn" style={{ flex: 1, gap: 6 }} onClick={() => invoke("run_power_action", { action: "bluetooth" }).catch(reportError)}>
               <Bluetooth size={14} /> Bluetooth
             </button>
-            <button className="icon-btn" onClick={() => invoke("run_power_action", { action: "lock" })} title="Lock PC">
+            <button className="icon-btn" onClick={() => invoke("run_power_action", { action: "lock" }).catch(reportError)} title="Lock PC">
               <Lock size={14} />
             </button>
-            <button className="icon-btn" onClick={() => invoke("run_power_action", { action: "sleep" })} title="Sleep">
+            <button className="icon-btn" onClick={() => invoke("run_power_action", { action: "sleep" }).catch(reportError)} title="Sleep">
               <Power size={14} />
             </button>
           </div>
@@ -723,6 +763,7 @@ export function DockWindow() {
       )}
 
       <div
+        ref={pillRef}
         className={`dock-pill mat-${config.glassMaterial} theme-${config.theme}`}
         onMouseEnter={handleDockEnter}
         onMouseLeave={handleDockLeave}

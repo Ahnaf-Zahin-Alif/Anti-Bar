@@ -110,8 +110,27 @@ pub fn index_installed_apps() -> Vec<SpotlightEntry> {
         }
     }
 
-    results.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    results.sort_by_key(|a| a.name.to_lowercase());
     results
+}
+
+pub fn filter_spotlight_entries(
+    entries: &[SpotlightEntry],
+    query_lower: &str,
+    limit: usize,
+) -> Vec<SpotlightEntry> {
+    if query_lower.is_empty() {
+        return entries.iter().take(limit).cloned().collect();
+    }
+    entries
+        .iter()
+        .filter(|e| {
+            e.name.to_ascii_lowercase().contains(query_lower)
+                || e.subtitle.to_ascii_lowercase().contains(query_lower)
+        })
+        .take(limit)
+        .cloned()
+        .collect()
 }
 
 /// Safe recursive-descent arithmetic evaluator supporting +, -, *, /, %, ^, and parentheses.

@@ -1,16 +1,31 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use tauri::{AppHandle, Emitter};
 
 static HOOK_ENABLED: AtomicBool = AtomicBool::new(false);
 static HOOK_STARTED: AtomicBool = AtomicBool::new(false);
+static HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 
 pub fn set_win_key_hook_enabled(app: &AppHandle, enabled: bool) {
     HOOK_ENABLED.store(enabled, Ordering::SeqCst);
-    if enabled && !HOOK_STARTED.swap(true, Ordering::SeqCst) {
+    if enabled {
+        if !HOOK_STARTED.swap(true, Ordering::SeqCst) {
+            #[cfg(windows)]
+            spawn_hook_thread(app.clone());
+            #[cfg(not(windows))]
+            let _ = app;
+        }
+    } else if HOOK_STARTED.swap(false, Ordering::SeqCst) {
         #[cfg(windows)]
-        spawn_hook_thread(app.clone());
-        #[cfg(not(windows))]
-        let _ = app;
+        {
+            let tid = HOOK_THREAD_ID.swap(0, Ordering::SeqCst);
+            if tid != 0 {
+                unsafe {
+                    use windows::Win32::Foundation::{LPARAM, WPARAM};
+                    use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
+                    let _ = PostThreadMessageW(tid, WM_QUIT, WPARAM(0), LPARAM(0));
+                }
+            }
+        }
     }
 }
 
@@ -60,7 +75,11 @@ fn spawn_hook_thread(app: AppHandle) {
     }
 
     std::thread::spawn(move || unsafe {
+        let tid = windows::Win32::System::Threading::GetCurrentThreadId();
+        HOOK_THREAD_ID.store(tid, Ordering::SeqCst);
         let Ok(hook) = SetWindowsHookExW(WH_KEYBOARD_LL, Some(ll_proc), None, 0) else {
+            HOOK_STARTED.store(false, Ordering::SeqCst);
+            HOOK_THREAD_ID.store(0, Ordering::SeqCst);
             return;
         };
         let mut msg = MSG::default();
@@ -69,5 +88,8 @@ fn spawn_hook_thread(app: AppHandle) {
             DispatchMessageW(&msg);
         }
         let _ = UnhookWindowsHookEx(hook);
+        WIN_DOWN.store(false, Ordering::SeqCst);
+        COMBO_USED.store(false, Ordering::SeqCst);
+        HOOK_THREAD_ID.store(0, Ordering::SeqCst);
     });
 }

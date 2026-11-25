@@ -44,7 +44,7 @@ pub fn sync_clock_widget(cfg: &AppConfig) {
 fn spawn_or_update_clock_window(params: ClockWidgetParams) {
     use std::sync::atomic::{AtomicIsize, Ordering};
     use windows::core::{w, Interface};
-    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_RECT_F};
     use windows::Win32::Graphics::Direct2D::{
         D2D1CreateFactory, ID2D1Factory, ID2D1HwndRenderTarget, ID2D1RenderTarget,
@@ -57,24 +57,43 @@ fn spawn_or_update_clock_window(params: ClockWidgetParams) {
     };
     use windows::Win32::Graphics::Gdi::InvalidateRect;
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, GetSystemMetrics, MoveWindow,
-        PostMessageW, RegisterClassExW, SetTimer, ShowWindow, SM_CXSCREEN, SW_HIDE,
-        SW_SHOWNOACTIVATE, WM_DESTROY, WM_PAINT, WM_TIMER, WNDCLASSEXW, WS_EX_NOACTIVATE,
-        WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
+        CreateWindowExW, DefWindowProcW, GetSystemMetrics, MoveWindow, PostMessageW,
+        RegisterClassExW, SetLayeredWindowAttributes, SetTimer, ShowWindow,
+        SystemParametersInfoW, LWA_ALPHA, SM_CXSCREEN, SPI_GETWORKAREA,
+        SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SW_HIDE, SW_SHOWNOACTIVATE, WM_DESTROY, WM_PAINT,
+        WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        WS_EX_TRANSPARENT, WS_POPUP,
     };
 
     static CLOCK_HWND: AtomicIsize = AtomicIsize::new(0);
     static ACTIVE_CFG: OnceLock<Mutex<ClockWidgetParams>> = OnceLock::new();
     let store = ACTIVE_CFG.get_or_init(|| Mutex::new(params.clone()));
-    *store.lock().unwrap() = params.clone();
+    *store.lock().unwrap_or_else(|e| e.into_inner()) = params.clone();
+
+    unsafe fn work_area_x(align: &str, top_offset: u32) -> (i32, i32) {
+        let mut wa = RECT::default();
+        if SystemParametersInfoW(
+            SPI_GETWORKAREA,
+            0,
+            Some(&mut wa as *mut RECT as *mut _),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+        .is_ok()
+        {
+            let w = (wa.right - wa.left).max(620);
+            let (rx, ry) = compute_clock_origin(w, 620, align, top_offset);
+            return (wa.left + rx, wa.top + ry);
+        }
+        let sw = GetSystemMetrics(SM_CXSCREEN);
+        compute_clock_origin(sw, 620, align, top_offset)
+    }
 
     let existing = CLOCK_HWND.load(Ordering::SeqCst);
     if existing != 0 {
         let hwnd = HWND(existing as *mut _);
         unsafe {
             if params.enabled {
-                let sw = GetSystemMetrics(SM_CXSCREEN);
-                let (x, y) = compute_clock_origin(sw, 620, &params.align, params.top_offset);
+                let (x, y) = work_area_x(&params.align, params.top_offset);
                 let _ = MoveWindow(hwnd, x, y, 620, 220, true);
                 let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
                 let _ = InvalidateRect(hwnd, None, true);
@@ -90,6 +109,14 @@ fn spawn_or_update_clock_window(params: ClockWidgetParams) {
     }
 
     std::thread::spawn(move || unsafe {
+        struct ClockDrawCache {
+            factory: ID2D1Factory,
+            dw: IDWriteFactory,
+            rt: Option<ID2D1HwndRenderTarget>,
+        }
+
+        static DRAW_CACHE: OnceLock<Mutex<Option<ClockDrawCache>>> = OnceLock::new();
+
         unsafe extern "system" fn wnd_proc(
             hwnd: HWND,
             msg: u32,
@@ -118,20 +145,28 @@ fn spawn_or_update_clock_window(params: ClockWidgetParams) {
         }
 
         unsafe fn render_d2d_clock(hwnd: HWND, cfg: &ClockWidgetParams) -> windows::core::Result<()> {
-            let factory: ID2D1Factory =
-                D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
-            let dw: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
-            let props = D2D1_RENDER_TARGET_PROPERTIES::default();
-            let hwnd_props = D2D1_HWND_RENDER_TARGET_PROPERTIES {
-                hwnd,
-                pixelSize: windows::Win32::Graphics::Direct2D::Common::D2D_SIZE_U {
-                    width: 620,
-                    height: 220,
-                },
-                ..Default::default()
-            };
-            let rt: ID2D1HwndRenderTarget = factory.CreateHwndRenderTarget(&props, &hwnd_props)?;
-            let fmt = dw.CreateTextFormat(
+            let cell = DRAW_CACHE.get_or_init(|| Mutex::new(None));
+            let mut guard = cell.lock().unwrap_or_else(|e| e.into_inner());
+            if guard.is_none() {
+                let factory: ID2D1Factory =
+                    D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
+                let dw: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
+                *guard = Some(ClockDrawCache { factory, dw, rt: None });
+            }
+            let cache = guard.as_mut().unwrap();
+            if cache.rt.is_none() {
+                let props = D2D1_RENDER_TARGET_PROPERTIES::default();
+                let hwnd_props = D2D1_HWND_RENDER_TARGET_PROPERTIES {
+                    hwnd,
+                    pixelSize: windows::Win32::Graphics::Direct2D::Common::D2D_SIZE_U {
+                        width: 620,
+                        height: 220,
+                    },
+                    ..Default::default()
+                };
+                cache.rt = Some(cache.factory.CreateHwndRenderTarget(&props, &hwnd_props)?);
+            }
+            let fmt = cache.dw.CreateTextFormat(
                 w!("Segoe UI Variable Display"),
                 None,
                 DWRITE_FONT_WEIGHT_SEMI_BOLD,
@@ -146,20 +181,22 @@ fn spawn_or_update_clock_window(params: ClockWidgetParams) {
             let time_str = format!("{:02}:{:02}", st.wHour, st.wMinute);
             let wide: Vec<u16> = time_str.encode_utf16().collect();
 
-            let base: ID2D1RenderTarget = rt.cast()?;
+            let base: ID2D1RenderTarget = cache.rt.as_ref().unwrap().cast()?;
             base.BeginDraw();
             let bg = match cfg.style.as_str() {
-                "glass" => D2D1_COLOR_F { r: 0.08, g: 0.1, b: 0.14, a: 0.72 },
-                _ => D2D1_COLOR_F { r: 0.04, g: 0.05, b: 0.07, a: 0.55 },
+                "glass" => D2D1_COLOR_F { r: 0.08, g: 0.1, b: 0.14, a: 1.0 },
+                _ => D2D1_COLOR_F { r: 0.04, g: 0.05, b: 0.07, a: 1.0 },
             };
             base.Clear(Some(&bg));
             let brush = base.CreateSolidColorBrush(
-                &D2D1_COLOR_F { r: 0.97, g: 0.98, b: 1.0, a: 0.96 },
+                &D2D1_COLOR_F { r: 0.97, g: 0.98, b: 1.0, a: 1.0 },
                 None,
             )?;
             let rect = D2D_RECT_F { left: 0.0, top: 24.0, right: 620.0, bottom: 200.0 };
             base.DrawText(&wide, &fmt, &rect, &brush, Default::default(), Default::default());
-            let _ = base.EndDraw(None, None);
+            if base.EndDraw(None, None).is_err() {
+                cache.rt = None;
+            }
             Ok(())
         }
 
@@ -171,10 +208,9 @@ fn spawn_or_update_clock_window(params: ClockWidgetParams) {
             ..Default::default()
         };
         RegisterClassExW(&wc);
-        let sw = GetSystemMetrics(SM_CXSCREEN);
-        let (x, y) = compute_clock_origin(sw, 620, &params.align, params.top_offset);
+        let (x, y) = work_area_x(&params.align, params.top_offset);
         let Ok(hwnd) = CreateWindowExW(
-            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_LAYERED,
             cls,
             w!("Anti-Bar Desktop Clock"),
             WS_POPUP,
@@ -189,6 +225,7 @@ fn spawn_or_update_clock_window(params: ClockWidgetParams) {
         ) else {
             return;
         };
+        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 210, LWA_ALPHA);
         CLOCK_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
         let _ = SetTimer(hwnd, 1, 15_000, None);
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);

@@ -122,14 +122,16 @@ fn hicon_to_png_data_url(hicon: windows::Win32::UI::WindowsAndMessaging::HICON) 
 
         // Convert BGRA -> RGBA and check if any alpha is non-zero
         let mut any_alpha = false;
-        for px in bgra.chunks_exact_mut(4) {
+        let (chunks, _) = bgra.as_chunks_mut::<4>();
+        for px in chunks {
             px.swap(0, 2);
             if px[3] != 0 {
                 any_alpha = true;
             }
         }
         if !any_alpha {
-            for px in bgra.chunks_exact_mut(4) {
+            let (chunks, _) = bgra.as_chunks_mut::<4>();
+            for px in chunks {
                 if px[0] != 0 || px[1] != 0 || px[2] != 0 {
                     px[3] = 255;
                 }
@@ -195,8 +197,11 @@ pub fn extract_path_icon_data_url(path: &str) -> Option<String> {
     };
 
     if let Ok(mut guard) = icon_cache().lock() {
-        if guard.len() >= 40 {
-            guard.clear();
+        if guard.len() >= 48 {
+            let evict: Vec<String> = guard.keys().take(16).cloned().collect();
+            for k in evict {
+                guard.remove(&k);
+            }
             guard.shrink_to_fit();
         }
         guard.insert(key, result.clone());
@@ -370,21 +375,38 @@ pub fn enumerate_running_windows() -> Vec<RunningWindow> {
 #[cfg(windows)]
 pub fn toggle_window_hwnd(hwnd_val: isize) {
     use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetForegroundWindow, IsIconic, SetForegroundWindow, ShowWindow, SW_MINIMIZE, SW_RESTORE,
-        SW_SHOW,
+        BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, IsIconic, IsWindow,
+        SetForegroundWindow, ShowWindow, SW_MINIMIZE, SW_RESTORE, SW_SHOW,
     };
 
     let hwnd = HWND(hwnd_val as *mut _);
     unsafe {
+        if !IsWindow(hwnd).as_bool() {
+            return;
+        }
+        let fg = GetForegroundWindow();
         if IsIconic(hwnd).as_bool() {
             let _ = ShowWindow(hwnd, SW_RESTORE);
-            let _ = SetForegroundWindow(hwnd);
-        } else if GetForegroundWindow().0 == hwnd.0 {
+        } else if fg.0 == hwnd.0 {
             let _ = ShowWindow(hwnd, SW_MINIMIZE);
+            return;
         } else {
             let _ = ShowWindow(hwnd, SW_SHOW);
-            let _ = SetForegroundWindow(hwnd);
+        }
+
+        let fg_tid = if !fg.0.is_null() {
+            GetWindowThreadProcessId(fg, None)
+        } else {
+            0
+        };
+        let cur_tid = GetCurrentThreadId();
+        let attached = fg_tid != 0 && fg_tid != cur_tid && AttachThreadInput(cur_tid, fg_tid, true).as_bool();
+        let _ = BringWindowToTop(hwnd);
+        let _ = SetForegroundWindow(hwnd);
+        if attached {
+            let _ = AttachThreadInput(cur_tid, fg_tid, false);
         }
     }
 }
@@ -499,7 +521,8 @@ pub fn capture_window_preview(hwnd_val: isize) -> Option<String> {
         if rows == 0 {
             return None;
         }
-        for px in bgra.chunks_exact_mut(4) {
+        let (chunks, _) = bgra.as_chunks_mut::<4>();
+        for px in chunks {
             px.swap(0, 2);
             px[3] = 255;
         }
@@ -549,12 +572,49 @@ pub fn launch_path(path: &str, args: Option<&str>) -> Result<(), String> {
 
 #[cfg(windows)]
 pub fn is_fullscreen_active() -> bool {
-    use windows::Win32::UI::Shell::{
-        SHQueryUserNotificationState, QUNS_BUSY, QUNS_RUNNING_D3D_FULL_SCREEN,
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
     };
+    use windows::Win32::UI::Shell::{SHQueryUserNotificationState, QUNS_RUNNING_D3D_FULL_SCREEN};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetClassNameW, GetForegroundWindow, GetWindowRect, IsWindowVisible,
+    };
+
     unsafe {
         if let Ok(state) = SHQueryUserNotificationState() {
-            return state == QUNS_RUNNING_D3D_FULL_SCREEN || state == QUNS_BUSY;
+            if state == QUNS_RUNNING_D3D_FULL_SCREEN {
+                return true;
+            }
+        }
+        let fg = GetForegroundWindow();
+        if fg.0.is_null() || !IsWindowVisible(fg).as_bool() {
+            return false;
+        }
+        let mut cls = [0u16; 64];
+        let clen = GetClassNameW(fg, &mut cls);
+        let cname = String::from_utf16_lossy(&cls[..clen as usize]);
+        if matches!(
+            cname.as_str(),
+            "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd"
+        ) {
+            return false;
+        }
+        let mut wr = RECT::default();
+        if GetWindowRect(fg, &mut wr).is_err() {
+            return false;
+        }
+        let mon = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
+        let mut mi = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if GetMonitorInfoW(mon, &mut mi).as_bool() {
+            let mr = mi.rcMonitor;
+            return wr.left <= mr.left
+                && wr.top <= mr.top
+                && wr.right >= mr.right
+                && wr.bottom >= mr.bottom;
         }
     }
     false
@@ -596,7 +656,7 @@ pub fn list_downloads() -> Vec<DownloadEntry> {
             })
         })
         .collect();
-    list.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms));
+    list.sort_by_key(|a| std::cmp::Reverse(a.modified_ms));
     list.truncate(24);
     list
 }

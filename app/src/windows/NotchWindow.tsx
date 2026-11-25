@@ -20,6 +20,12 @@ import {
 } from "lucide-react";
 import { AppConfig, ClipboardItem, LyricsResult, MediaState } from "../types";
 import { STRINGS } from "../i18n";
+import {
+  filterClipboardItems,
+  formatBytes,
+  formatClipTime,
+  formatMediaTime,
+} from "../utils";
 
 type NotchTab = "media" | "shelf" | "timer" | "clipboard";
 type ClipFilter = "all" | "text" | "image";
@@ -88,6 +94,7 @@ export function NotchWindow() {
 
     return () => {
       clearInterval(clockTick);
+      if (hoverTimerRef.current) window.clearTimeout(hoverTimerRef.current);
       unlistenMedia.then((u) => u());
       unlistenClip.then((u) => u());
       unlistenCfg.then((u) => u());
@@ -144,15 +151,10 @@ export function NotchWindow() {
     return `${m}:${String(s).padStart(2, "0")}`;
   };
 
-  const filteredClips = useMemo(() => {
-    const q = clipQuery.trim().toLowerCase();
-    return clips.filter((c) => {
-      if (clipFilter === "image" && c.kind !== "image") return false;
-      if (clipFilter === "text" && c.kind === "image") return false;
-      if (!q) return true;
-      return c.content.toLowerCase().includes(q);
-    });
-  }, [clips, clipFilter, clipQuery]);
+  const filteredClips = useMemo(
+    () => filterClipboardItems(clips, clipFilter, clipQuery),
+    [clips, clipFilter, clipQuery]
+  );
 
   const totalTimerSec = timerMinutes * 60;
   const timerProgress = totalTimerSec > 0 ? Math.max(0, Math.min(1, timerSec / totalTimerSec)) : 0;
@@ -315,24 +317,24 @@ export function NotchWindow() {
                             }}
                           />
                           <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#94a3b8", fontVariantNumeric: "tabular-nums" }}>
-                            <span>{fmtTime(media.positionSec)}</span>
-                            <span>-{fmtTime(Math.max(0, media.durationSec - media.positionSec))}</span>
+                            <span>{formatMediaTime(media.positionSec)}</span>
+                            <span>-{formatMediaTime(Math.max(0, media.durationSec - media.positionSec))}</span>
                           </div>
                         </div>
                       )}
 
                       <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 14, marginTop: 10 }}>
-                        <button className="icon-btn" onClick={() => invoke("control_media", { action: "prev" })}>
+                        <button className="icon-btn" onClick={() => invoke("control_media", { action: "prev" }).catch(() => {})}>
                           <SkipBack size={16} />
                         </button>
                         <button
                           className="icon-btn"
                           style={{ padding: "8px 14px", background: "rgba(255,255,255,0.16)" }}
-                          onClick={() => invoke("control_media", { action: "toggle" })}
+                          onClick={() => invoke("control_media", { action: "toggle" }).catch(() => {})}
                         >
                           {media.isPlaying ? <Pause size={17} /> : <Play size={17} />}
                         </button>
-                        <button className="icon-btn" onClick={() => invoke("control_media", { action: "next" })}>
+                        <button className="icon-btn" onClick={() => invoke("control_media", { action: "next" }).catch(() => {})}>
                           <SkipForward size={16} />
                         </button>
                       </div>
@@ -377,6 +379,7 @@ export function NotchWindow() {
                         <div key={`${f.name}-${i}`} style={{ display: "flex", alignItems: "center", gap: 8, color: "#f8fafc" }}>
                           <FileText size={14} />
                           <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</span>
+                          <span style={{ fontSize: 11, color: "#94a3b8" }}>{formatBytes(f.size)}</span>
                           <button
                             className="icon-btn"
                             onClick={() => setShelf((prev) => prev.filter((_, idx) => idx !== i))}
@@ -491,7 +494,7 @@ export function NotchWindow() {
                     </button>
                     <button
                       className="notch-chip"
-                      onClick={() => invoke<ClipboardItem[]>("clear_clipboard_history").then(setClips)}
+                      onClick={() => invoke<ClipboardItem[]>("clear_clipboard_history").then(setClips).catch(() => {})}
                     >
                       Clear
                     </button>
@@ -514,10 +517,12 @@ export function NotchWindow() {
                               invoke("copy_clipboard_item", {
                                 text: c.content,
                                 imageDataUrl: c.imageDataUrl ?? null,
-                              }).then(() => {
-                                setCopiedId(c.id);
-                                window.setTimeout(() => setCopiedId((prev) => (prev === c.id ? null : prev)), 1100);
-                              });
+                              })
+                                .then(() => {
+                                  setCopiedId(c.id);
+                                  window.setTimeout(() => setCopiedId((prev) => (prev === c.id ? null : prev)), 1100);
+                                })
+                                .catch(() => {});
                             }}
                           >
                             {c.imageDataUrl && (
@@ -532,7 +537,7 @@ export function NotchWindow() {
                                 {c.content}
                               </div>
                               <div style={{ fontSize: 10, color: "#94a3b8" }}>
-                                {new Date(c.timestampMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} ·{" "}
+                                {formatClipTime(c.timestampMs)} ·{" "}
                                 {c.kind === "image" ? "Image" : c.kind === "url" ? "Link" : "Text"}
                               </div>
                             </div>
@@ -542,7 +547,9 @@ export function NotchWindow() {
                             className="icon-btn"
                             style={{ padding: 5 }}
                             onClick={() =>
-                              invoke<ClipboardItem[]>("toggle_pin_clipboard_item", { id: c.id }).then(setClips)
+                              invoke<ClipboardItem[]>("toggle_pin_clipboard_item", { id: c.id })
+                                .then(setClips)
+                                .catch(() => {})
                             }
                           >
                             <Pin size={12} color={c.pinned ? "#38bdf8" : "#94a3b8"} />

@@ -29,15 +29,20 @@ struct SpotlightSearchResult {
     entries: Vec<spotlight::SpotlightEntry>,
 }
 
-#[tauri::command]
-fn get_config(state: State<AppState>) -> AppConfig {
-    state.config.lock().map(|g| g.clone()).unwrap_or_default()
+fn lock_recover<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 #[tauri::command]
-fn update_config(app: AppHandle, state: State<AppState>, new_config: AppConfig) -> Result<AppConfig, String> {
+fn get_config(state: State<AppState>) -> AppConfig {
+    lock_recover(&state.config).clone()
+}
+
+#[tauri::command]
+fn update_config(app: AppHandle, state: State<AppState>, mut new_config: AppConfig) -> Result<AppConfig, String> {
+    config::sanitize_config(&mut new_config);
     {
-        let mut guard = state.config.lock().map_err(|e| e.to_string())?;
+        let mut guard = lock_recover(&state.config);
         *guard = new_config.clone();
     }
     save_config(&new_config)?;
@@ -52,13 +57,10 @@ fn update_config(app: AppHandle, state: State<AppState>, new_config: AppConfig) 
 
 #[tauri::command]
 fn fetch_ics_agenda(url: String) -> Vec<native_ui::desktop_widgets::IcsEvent> {
-    let trimmed = url.trim();
-    let Some(rest) = trimmed.strip_prefix("https://") else {
+    let Some((host, pq)) = native_ui::desktop_widgets::parse_https_url(&url) else {
         return Vec::new();
     };
-    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
-    let pq = format!("/{}", path);
-    match system_panels::winhttp_get(host, &pq, "text/calendar,text/plain") {
+    match system_panels::winhttp_get(&host, &pq, "text/calendar,text/plain") {
         Ok(raw) => native_ui::desktop_widgets::parse_ics_events(&raw),
         Err(_) => Vec::new(),
     }
@@ -209,20 +211,11 @@ fn search_spotlight(state: State<AppState>, query: String) -> SpotlightSearchRes
 
     let q = query.trim().to_ascii_lowercase();
     let mut entries: Vec<spotlight::SpotlightEntry> = {
-        let mut cache = state.spotlight_cache.lock().unwrap();
+        let mut cache = lock_recover(&state.spotlight_cache);
         if cache.is_empty() {
             *cache = spotlight::index_installed_apps();
         }
-        if q.is_empty() {
-            cache.iter().take(12).cloned().collect()
-        } else {
-            cache
-                .iter()
-                .filter(|e| e.name.to_ascii_lowercase().contains(&q))
-                .take(12)
-                .cloned()
-                .collect()
-        }
+        spotlight::filter_spotlight_entries(&cache, &q, 12)
     };
 
     for e in &mut entries {
@@ -239,11 +232,7 @@ fn search_spotlight(state: State<AppState>, query: String) -> SpotlightSearchRes
 
 #[tauri::command]
 fn get_clipboard_history(state: State<AppState>) -> Vec<clipboard::ClipboardItem> {
-    state
-        .clipboard_history
-        .lock()
-        .map(|g| g.clone())
-        .unwrap_or_default()
+    lock_recover(&state.clipboard_history).clone()
 }
 
 #[tauri::command]
@@ -258,7 +247,7 @@ fn copy_clipboard_item(text: String, image_data_url: Option<String>) -> Result<(
 
 #[tauri::command]
 fn toggle_pin_clipboard_item(state: State<AppState>, id: String) -> Vec<clipboard::ClipboardItem> {
-    let mut guard = state.clipboard_history.lock().unwrap();
+    let mut guard = lock_recover(&state.clipboard_history);
     if let Some(item) = guard.iter_mut().find(|i| i.id == id) {
         item.pinned = !item.pinned;
     }
@@ -268,7 +257,7 @@ fn toggle_pin_clipboard_item(state: State<AppState>, id: String) -> Vec<clipboar
 
 #[tauri::command]
 fn clear_clipboard_history(state: State<AppState>) -> Vec<clipboard::ClipboardItem> {
-    let mut guard = state.clipboard_history.lock().unwrap();
+    let mut guard = lock_recover(&state.clipboard_history);
     guard.retain(|i| i.pinned);
     clipboard::save_history(&guard);
     guard.clone()
@@ -368,7 +357,9 @@ fn hide_spotlight(app: AppHandle) {
         let _ = win.hide();
         apply_webview_memory_policy(&win, true);
     }
-    if let Ok(mut cache) = app.state::<AppState>().spotlight_cache.lock() {
+    {
+        let state = app.state::<AppState>();
+        let mut cache = lock_recover(&state.spotlight_cache);
         cache.clear();
         cache.shrink_to_fit();
     }
@@ -380,19 +371,35 @@ fn hide_spotlight(app: AppHandle) {
 
 #[tauri::command]
 fn resize_overlay(app: AppHandle, state: State<AppState>, label: String, width: f64, height: f64) {
-    if let Some(win) = app.get_webview_window(&label) {
-        let _ = win.set_size(tauri::LogicalSize::new(width, height));
-        if label == "dock" {
-            let taskbar_hidden = state
-                .config
-                .lock()
-                .map(|g| g.hide_windows_taskbar)
-                .unwrap_or(false);
-            position_bottom_center(&win, width, height, taskbar_hidden);
-        } else if label == "notch" {
-            position_top_center(&win, width);
+    let taskbar_hidden = lock_recover(&state.config).hide_windows_taskbar;
+    let app_for_main = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(win) = app_for_main.get_webview_window(&label) {
+            if label == "dock" {
+                if let Ok(Some(mon)) = win.primary_monitor() {
+                    let scale = mon.scale_factor();
+                    let (left, top, area_w, area_h) = if taskbar_hidden {
+                        let p = mon.position();
+                        let s = mon.size();
+                        (p.x as f64 / scale, p.y as f64 / scale, s.width as f64 / scale, s.height as f64 / scale)
+                    } else {
+                        let wa = mon.work_area();
+                        (wa.position.x as f64 / scale, wa.position.y as f64 / scale, wa.size.width as f64 / scale, wa.size.height as f64 / scale)
+                    };
+                    let (x, y, cw, ch) = compute_bottom_center_rect(left, top, area_w, area_h, width, height);
+                    let _ = win.set_size(tauri::LogicalSize::new(cw, ch));
+                    let _ = win.set_position(tauri::LogicalPosition::new(x, y));
+                }
+            } else if label == "notch" {
+                let cw = width.max(120.0);
+                let ch = height.max(32.0);
+                let _ = win.set_size(tauri::LogicalSize::new(cw, ch));
+                position_top_center(&win, cw);
+            } else {
+                let _ = win.set_size(tauri::LogicalSize::new(width.max(120.0), height.max(40.0)));
+            }
         }
-    }
+    });
 }
 
 fn reposition_dock(app: &AppHandle, taskbar_hidden: bool) {
@@ -432,12 +439,39 @@ fn sync_notch_window(app: &AppHandle, enabled: bool) {
     }
 }
 
+pub fn compute_top_center_xy(mon_left: f64, mon_top: f64, mon_w: f64, width: f64) -> (f64, f64, f64) {
+    let max_w = (mon_w - 8.0).max(180.0);
+    let cw = width.clamp(180.0, max_w);
+    let x = mon_left + ((mon_w - cw) / 2.0).max(0.0);
+    (x, mon_top + 6.0, cw)
+}
+
+pub fn compute_bottom_center_rect(
+    area_left: f64,
+    area_top: f64,
+    area_w: f64,
+    area_h: f64,
+    width: f64,
+    height: f64,
+) -> (f64, f64, f64, f64) {
+    let max_w = (area_w - 8.0).max(200.0);
+    let max_h = (area_h - 8.0).max(60.0);
+    let cw = width.clamp(200.0, max_w);
+    let ch = height.clamp(60.0, max_h);
+    let x = area_left + ((area_w - cw) / 2.0).max(0.0);
+    let y = (area_top + area_h - ch - 2.0).max(area_top);
+    (x, y, cw, ch)
+}
+
 fn position_top_center(win: &tauri::WebviewWindow, width: f64) {
     if let Ok(Some(mon)) = win.primary_monitor() {
         let scale = mon.scale_factor();
+        let pos = mon.position();
+        let mon_left = pos.x as f64 / scale;
+        let mon_top = pos.y as f64 / scale;
         let mon_w = mon.size().width as f64 / scale;
-        let x = ((mon_w - width) / 2.0).max(0.0);
-        let _ = win.set_position(tauri::LogicalPosition::new(x, 6.0));
+        let (x, y, _) = compute_top_center_xy(mon_left, mon_top, mon_w, width);
+        let _ = win.set_position(tauri::LogicalPosition::new(x, y));
     }
 }
 
@@ -467,8 +501,7 @@ fn position_bottom_center(
                 wa.size.height as f64 / scale,
             )
         };
-        let x = left + ((area_w - width) / 2.0).max(0.0);
-        let y = (top + area_h - height - 2.0).max(top);
+        let (x, y, _, _) = compute_bottom_center_rect(left, top, area_w, area_h, width, height);
         let _ = win.set_position(tauri::LogicalPosition::new(x, y));
     }
 }
@@ -527,7 +560,7 @@ fn start_background_pollers(app: AppHandle) {
                         last_clip = txt.clone();
                         let state = app.state::<AppState>();
                         let updated = {
-                            let mut guard = state.clipboard_history.lock().unwrap();
+                            let mut guard = lock_recover(&state.clipboard_history);
                             if clipboard::push_clipboard_text(&mut guard, txt) {
                                 Some(guard.clone())
                             } else {
@@ -543,7 +576,7 @@ fn start_background_pollers(app: AppHandle) {
                         last_img = img.clone();
                         let state = app.state::<AppState>();
                         let updated = {
-                            let mut guard = state.clipboard_history.lock().unwrap();
+                            let mut guard = lock_recover(&state.clipboard_history);
                             if clipboard::push_clipboard_image(&mut guard, img) {
                                 Some(guard.clone())
                             } else {
@@ -591,7 +624,7 @@ fn start_background_pollers(app: AppHandle) {
                 }
             }
 
-            if tick_count == 3 || tick_count % 20 == 0 {
+            if tick_count == 3 || tick_count.is_multiple_of(20) {
                 dock_win::trim_process_tree_memory();
             }
         }
@@ -732,19 +765,14 @@ pub fn run() {
                     "toggle_taskbar" => {
                         let state = app.state::<AppState>();
                         let updated = {
-                            if let Ok(mut guard) = state.config.lock() {
-                                guard.hide_windows_taskbar = !guard.hide_windows_taskbar;
-                                Some(guard.clone())
-                            } else {
-                                None
-                            }
+                            let mut guard = lock_recover(&state.config);
+                            guard.hide_windows_taskbar = !guard.hide_windows_taskbar;
+                            guard.clone()
                         };
-                        if let Some(cfg) = updated {
-                            let _ = save_config(&cfg);
-                            let _ = app.emit("antibar://config-changed", &cfg);
-                            dock_win::set_windows_taskbar_hidden(cfg.hide_windows_taskbar);
-                            reposition_dock(app, cfg.hide_windows_taskbar);
-                        }
+                        let _ = save_config(&updated);
+                        let _ = app.emit("antibar://config-changed", &updated);
+                        dock_win::set_windows_taskbar_hidden(updated.hide_windows_taskbar);
+                        reposition_dock(app, updated.hide_windows_taskbar);
                     }
                     "spotlight" => toggle_spotlight(app.clone()),
                     "settings" => open_settings(app.clone()),

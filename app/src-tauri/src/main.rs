@@ -6,7 +6,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use anti_bar_lib::{audio_mixer, clipboard, config, native_ui, spotlight, system_panels};
+    use anti_bar_lib::{audio_mixer, clipboard, config, dock_win, native_ui, spotlight, system_panels};
 
     #[test]
     fn milestone1_config_defaults_and_roundtrip() {
@@ -126,5 +126,204 @@ mod tests {
         };
         let json = serde_json::to_string(&dev).expect("serialize device");
         assert!(json.contains("isDefault"));
+    }
+
+    #[test]
+    fn audit_io_config_sanitize_and_corruption() {
+        let mut cfg = config::AppConfig {
+            icon_size: 999,
+            magnification: 12.0,
+            clock_size: 4,
+            clock_top_offset: 9000,
+            theme: "neon".into(),
+            glass_material: "plastic".into(),
+            icon_style: "3d".into(),
+            downloads_view: "carousel".into(),
+            clock_align: "diagonal".into(),
+            language: "id".into(),
+            ..Default::default()
+        };
+        config::sanitize_config(&mut cfg);
+        assert_eq!(cfg.icon_size, 64);
+        assert!((cfg.magnification - 1.65).abs() < 1e-6);
+        assert_eq!(cfg.clock_size, 56);
+        assert_eq!(cfg.clock_top_offset, 320);
+        assert_eq!(cfg.theme, "dark");
+        assert_eq!(cfg.glass_material, "frosted");
+        assert_eq!(cfg.icon_style, "squircle");
+        assert_eq!(cfg.downloads_view, "grid");
+        assert_eq!(cfg.clock_align, "center");
+        assert_eq!(cfg.language, "en");
+
+        let mut min_cfg = config::AppConfig {
+            icon_size: 0,
+            magnification: f32::NAN,
+            clock_size: 500,
+            clock_top_offset: 0,
+            ..Default::default()
+        };
+        config::sanitize_config(&mut min_cfg);
+        assert_eq!(min_cfg.icon_size, 36);
+        assert!((min_cfg.magnification - 1.38).abs() < 1e-6);
+        assert_eq!(min_cfg.clock_size, 180);
+        assert_eq!(min_cfg.clock_top_offset, 24);
+
+        // Corrupted / partial JSON must fail parse or deserialize missing fields cleanly via default()
+        assert!(serde_json::from_str::<config::AppConfig>("{bad json").is_err());
+        let partial: config::AppConfig =
+            serde_json::from_str(r#"{"iconSize":52,"theme":"light"}"#).expect("partial config");
+        assert_eq!(partial.icon_size, 52);
+        assert_eq!(partial.theme, "light");
+        assert!(partial.language == "en");
+    }
+
+    #[test]
+    fn audit_io_ics_and_https_url() {
+        use native_ui::desktop_widgets::{parse_https_url, parse_ics_events};
+
+        assert_eq!(parse_https_url("http://example.com/a.ics"), None);
+        assert_eq!(parse_https_url("https://"), None);
+        assert_eq!(parse_https_url("https://bad host/a.ics"), None);
+        assert_eq!(
+            parse_https_url("  https://calendar.example.com/u/1/basic.ics?t=1  "),
+            Some(("calendar.example.com".into(), "/u/1/basic.ics?t=1".into()))
+        );
+
+        let ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nDTSTART;TZID=Asia/Dhaka:20261125T093000\r\nSUMMARY;LANGUAGE=en-US:Quarterly\\, Q4\\; Architecture \r\n Review 🚀\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nSUMMARY:Unclosed Event\r\nBEGIN:VEVENT\r\nDTSTART:20261126\r\nSUMMARY:\r\nEND:VEVENT\r\nEND:VCALENDAR";
+        let events = parse_ics_events(ics);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].dtstart, "20261125T093000");
+        assert!(events[0].summary.contains("Quarterly, Q4; Architecture Review 🚀"));
+    }
+
+    #[test]
+    fn audit_io_spotlight_eval_and_filter() {
+        assert_eq!(spotlight::eval_math_expr(""), None);
+        assert_eq!(spotlight::eval_math_expr("   "), None);
+        assert_eq!(spotlight::eval_math_expr("42"), None);
+        assert_eq!(spotlight::eval_math_expr("1 / 0"), None);
+        assert_eq!(spotlight::eval_math_expr("(1 + 2"), None);
+        assert_eq!(spotlight::eval_math_expr("1 + alert(1)"), None);
+        assert_eq!(spotlight::eval_math_expr("1000^1000"), None);
+        let res = spotlight::eval_math_expr("(2 + 3) * 4^2 / 5 - 1.5").expect("math");
+        assert!((res - 14.5).abs() < 1e-9);
+        assert_eq!(spotlight::eval_math_expr("-3 + 5"), Some(2.0));
+
+        let entries = vec![
+            spotlight::SpotlightEntry {
+                id: "1".into(),
+                name: "Visual Studio Code".into(),
+                subtitle: "Microsoft Dev Editor".into(),
+                kind: "app".into(),
+                path: "code.exe".into(),
+                icon_data_url: None,
+            },
+            spotlight::SpotlightEntry {
+                id: "2".into(),
+                name: "Term".into(),
+                subtitle: "Windows Terminal • 日本語".into(),
+                kind: "app".into(),
+                path: "wt.exe".into(),
+                icon_data_url: None,
+            },
+        ];
+        assert!(spotlight::filter_spotlight_entries(&[], "a", 10).is_empty());
+        assert!(spotlight::filter_spotlight_entries(&entries, "", 0).is_empty());
+        assert_eq!(spotlight::filter_spotlight_entries(&entries, "dev editor", 5).len(), 1);
+        assert_eq!(spotlight::filter_spotlight_entries(&entries, "日本語", 5).len(), 1);
+    }
+
+    #[test]
+    fn audit_io_lrc_wifi_filetime_and_clipboard_validation() {
+        // FILETIME underflow guard (< Jan 1 1970) and valid post-epoch timestamp
+        assert_eq!(system_panels::filetime_ticks_to_unix_ms(-500), 0);
+        assert_eq!(system_panels::filetime_ticks_to_unix_ms(0), 0);
+        assert_eq!(system_panels::filetime_ticks_to_unix_ms(116_444_736_000_000_000), 0);
+        assert_eq!(system_panels::filetime_ticks_to_unix_ms(116_444_736_000_000_000 + 25_000), 2);
+
+        // Multi-tag or out-of-order LRC sorting, negative-ts rejection, and blank-line filtering
+        let lrc = "[01:10.00][00:08.50] Late\n[bad] Ignore\n[-01:00.00] Neg\n[00:02.250] Early\n[00:05.00] ";
+        let parsed = system_panels::parse_lrc(lrc);
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[0].text, "Early");
+        assert_eq!(parsed[1].text, "Late");
+        assert!((parsed[1].time_sec - 8.5).abs() < 1e-6);
+        assert_eq!(parsed[2].text, "Late");
+        assert!((parsed[2].time_sec - 70.0).abs() < 1e-6);
+
+        // Clipboard push/dedup/35-cap bounds
+        let mut clips = Vec::new();
+        assert!(!clipboard::push_clipboard_text(&mut clips, "   \n\t ".into()));
+        for i in 0..45 {
+            assert!(clipboard::push_clipboard_text(&mut clips, format!("clip-{i}")));
+        }
+        assert_eq!(clips.len(), 35);
+        assert_eq!(clips[0].content, "clip-44");
+        // Re-pushing existing item returns false (duplicate guard)
+        assert!(!clipboard::push_clipboard_text(&mut clips, "clip-44".into()));
+
+        // Adversarial PNG payloads must be rejected before opening clipboard
+        assert!(clipboard::write_clipboard_png_data_url("").is_err());
+        assert!(clipboard::write_clipboard_png_data_url("data:image/jpeg;base64,/9j/").is_err());
+        assert!(clipboard::write_clipboard_png_data_url("data:image/png;base64,!!!").is_err());
+        assert!(clipboard::write_clipboard_png_data_url("data:image/png;base64,AAAA").is_err());
+    }
+
+    #[test]
+    fn audit_position_multi_monitor_and_bounds() {
+        // Primary monitor at origin
+        let (x0, y0, w0) = anti_bar_lib::compute_top_center_xy(0.0, 0.0, 1920.0, 260.0);
+        assert!((x0 - 830.0).abs() < 1e-6 && (y0 - 6.0).abs() < 1e-6 && (w0 - 260.0).abs() < 1e-6);
+
+        // Negative left monitor at (-1920, -120)
+        let (x1, y1, _) = anti_bar_lib::compute_top_center_xy(-1920.0, -120.0, 1920.0, 380.0);
+        assert!((x1 - (-1150.0)).abs() < 1e-6 && (y1 - (-114.0)).abs() < 1e-6);
+
+        // Narrow/small DPI-scaled work area must clamp dock inside monitor bounds
+        let (bx, by, bw, bh) =
+            anti_bar_lib::compute_bottom_center_rect(-1280.0, 40.0, 800.0, 480.0, 1040.0, 500.0);
+        assert!(bx >= -1280.0);
+        assert!(bw <= 792.0);
+        assert!(by >= 40.0);
+        assert!(bh <= 472.0);
+        assert!(by + bh <= 40.0 + 480.0);
+
+        // Clock narrow screen guard
+        let (cx, cy) = native_ui::desktop_clock::compute_clock_origin(400, 620, "right", 40);
+        assert_eq!((cx, cy), (0, 40));
+
+        // Magnetic snap edge cases: empty siblings & out-of-threshold
+        let dragged = native_ui::desktop_widgets::WidgetRect { x: 200, y: 300, w: 300, h: 150 };
+        assert_eq!(native_ui::desktop_widgets::snap_widget_position(dragged, &[], 14), (200, 300));
+    }
+
+    #[test]
+    fn audit_live_win32_readonly_and_error_guards() {
+        let windows = dock_win::enumerate_running_windows();
+        for w in &windows {
+            assert_ne!(w.hwnd, 0);
+            assert!(!w.title.trim().is_empty());
+        }
+        let trash = dock_win::query_recycle_bin();
+        assert!(trash.items < 10_000_000);
+        assert!(dock_win::list_downloads().len() <= 12);
+        let _ = dock_win::is_fullscreen_active();
+
+        // Invalid HWND preview returns None cleanly without panic or crash
+        assert!(dock_win::capture_window_preview(0).is_none());
+        assert!(dock_win::capture_window_preview(-999_999).is_none());
+
+        // Error validation on mixer & power endpoints
+        assert!(audio_mixer::set_default_output_device("   ").is_err());
+        assert!(system_panels::execute_power_action("format_c").is_err());
+
+        // Live read-only audio + system metrics sanity
+        let _ = audio_mixer::list_output_devices();
+        let _ = audio_mixer::list_audio_sessions();
+        let status = system_panels::get_system_status();
+        let _ = status.ac_online;
+        if status.has_battery {
+            assert!(status.battery_percent <= 100);
+        }
     }
 }

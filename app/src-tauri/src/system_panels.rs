@@ -236,29 +236,34 @@ pub fn media_control(_action: &str) -> Result<(), String> {
 pub fn parse_lrc(lrc: &str) -> Vec<LyricLine> {
     let mut lines = Vec::new();
     for raw in lrc.lines() {
-        let trimmed = raw.trim();
-        if !trimmed.starts_with('[') {
+        let mut cursor = raw.trim();
+        let mut timestamps = Vec::new();
+        while cursor.starts_with('[') {
+            let Some(end_bracket) = cursor.find(']') else {
+                break;
+            };
+            let ts = &cursor[1..end_bracket];
+            if let Some((min_s, sec_s)) = ts.split_once(':') {
+                if let (Ok(mins), Ok(secs)) = (min_s.parse::<f64>(), sec_s.parse::<f64>()) {
+                    if mins.is_finite() && mins >= 0.0 && secs.is_finite() && secs >= 0.0 {
+                        timestamps.push(mins * 60.0 + secs);
+                    }
+                }
+            }
+            cursor = cursor[end_bracket + 1..].trim_start();
+        }
+        let text = cursor.trim();
+        if timestamps.is_empty() || text.is_empty() {
             continue;
         }
-        let Some(end_bracket) = trimmed.find(']') else {
-            continue;
-        };
-        let ts = &trimmed[1..end_bracket];
-        let text = trimmed[end_bracket + 1..].trim();
-        let Some((min_s, sec_s)) = ts.split_once(':') else {
-            continue;
-        };
-        let Ok(mins) = min_s.parse::<f64>() else {
-            continue;
-        };
-        let Ok(secs) = sec_s.parse::<f64>() else {
-            continue;
-        };
-        lines.push(LyricLine {
-            time_sec: mins * 60.0 + secs,
-            text: text.to_string(),
-        });
+        for time_sec in timestamps {
+            lines.push(LyricLine {
+                time_sec,
+                text: text.to_string(),
+            });
+        }
     }
+    lines.sort_by(|a, b| a.time_sec.total_cmp(&b.time_sec));
     lines
 }
 
@@ -281,9 +286,14 @@ pub fn winhttp_get(host: &str, path_and_query: &str, accept: &str) -> Result<Str
     use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::Networking::WinHttp::{
         WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest,
-        WinHttpQueryDataAvailable, WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest,
-        WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_FLAG_SECURE,
+        WinHttpQueryDataAvailable, WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse,
+        WinHttpSendRequest, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_FLAG_SECURE,
+        WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE,
     };
+
+    if host.trim().is_empty() {
+        return Err("Empty HTTP host".into());
+    }
 
     unsafe {
         let ua = HSTRING::from("AntiBar/0.1.0");
@@ -326,6 +336,22 @@ pub fn winhttp_get(host: &str, path_and_query: &str, accept: &str) -> Result<Str
                         .map_err(|e| e.to_string())?;
                     WinHttpReceiveResponse(req, std::ptr::null_mut())
                         .map_err(|e| e.to_string())?;
+
+                    let mut status_code: u32 = 0;
+                    let mut status_len = std::mem::size_of::<u32>() as u32;
+                    if WinHttpQueryHeaders(
+                        req,
+                        WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                        PCWSTR::null(),
+                        Some(&mut status_code as *mut u32 as *mut _),
+                        &mut status_len,
+                        std::ptr::null_mut(),
+                    )
+                    .is_ok()
+                        && status_code >= 400
+                    {
+                        return Err(format!("HTTP error status {}", status_code));
+                    }
 
                     let mut body = Vec::new();
                     loop {
@@ -372,13 +398,15 @@ pub fn fetch_synced_lyrics(title: &str, artist: &str, album: &str, duration_sec:
             plain: String::new(),
         };
     }
-    let query = format!(
-        "/api/get?track_name={}&artist_name={}&album_name={}&duration={}",
+    let mut query = format!(
+        "/api/get?track_name={}&artist_name={}&album_name={}",
         percent_encode(title),
         percent_encode(artist),
-        percent_encode(album),
-        duration_sec.round() as i64
+        percent_encode(album)
     );
+    if duration_sec.is_finite() && duration_sec > 0.0 {
+        query.push_str(&format!("&duration={}", duration_sec.round() as i64));
+    }
     let Ok(body) = winhttp_get("lrclib.net", &query, "application/json") else {
         return LyricsResult {
             found: false,
@@ -583,6 +611,16 @@ pub fn execute_power_action(action: &str) -> Result<(), String> {
     }
 }
 
+pub fn filetime_ticks_to_unix_ms(universal_time_100ns: i64) -> i64 {
+    const EPOCH_DIFF_MS: i64 = 11_644_473_600_000;
+    let ms = universal_time_100ns / 10_000;
+    if ms <= EPOCH_DIFF_MS {
+        0
+    } else {
+        ms - EPOCH_DIFF_MS
+    }
+}
+
 #[cfg(windows)]
 pub fn list_notifications(request_if_needed: bool) -> NotificationsSnapshot {
     use windows::UI::Notifications::Management::{
@@ -669,7 +707,7 @@ pub fn list_notifications(request_if_needed: bool) -> NotificationsSnapshot {
                 // Windows DateTime UniversalTime = 100ns ticks since 1601-01-01
                 let timestamp_ms = n
                     .CreationTime()
-                    .map(|dt| (dt.UniversalTime / 10_000) - 11_644_473_600_000)
+                    .map(|dt| filetime_ticks_to_unix_ms(dt.UniversalTime))
                     .unwrap_or(0);
 
                 items.push(WindowsNotificationItem {
@@ -686,7 +724,7 @@ pub fn list_notifications(request_if_needed: bool) -> NotificationsSnapshot {
             }
         }
     }
-    items.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
+    items.sort_by_key(|a| std::cmp::Reverse(a.timestamp_ms));
     items.truncate(24);
     NotificationsSnapshot {
         status: "allowed".into(),

@@ -162,3 +162,8 @@ export interface SystemStatus {
   acOnline: boolean;
   hasBattery: boolean;
 }
+
+export interface IcsEvent {
+  summary: string;
+  dtstart: string;
+}

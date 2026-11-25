@@ -32,7 +32,7 @@ pub struct AgendaItem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct AppConfig {
     pub language: String,             // "auto" | "en" | "id"
     pub theme: String,                // "dark" | "light"
@@ -157,21 +157,58 @@ pub fn config_path() -> PathBuf {
     app_data_dir().join("config.json")
 }
 
+pub fn sanitize_config(cfg: &mut AppConfig) {
+    if cfg.theme != "dark" && cfg.theme != "light" {
+        cfg.theme = "dark".into();
+    }
+    if !matches!(
+        cfg.glass_material.as_str(),
+        "frosted" | "liquid" | "matte" | "classic"
+    ) {
+        cfg.glass_material = "frosted".into();
+    }
+    if !matches!(
+        cfg.icon_style.as_str(),
+        "windows" | "squircle" | "normalized"
+    ) {
+        cfg.icon_style = "squircle".into();
+    }
+    if cfg.downloads_view != "grid" && cfg.downloads_view != "list" {
+        cfg.downloads_view = "grid".into();
+    }
+    cfg.icon_size = cfg.icon_size.clamp(36, 64);
+    cfg.magnification = if cfg.magnification.is_finite() {
+        cfg.magnification.clamp(1.0, 1.65)
+    } else {
+        1.38
+    };
+    cfg.clock_size = cfg.clock_size.clamp(56, 180);
+    cfg.clock_top_offset = cfg.clock_top_offset.clamp(24, 320);
+    if !matches!(cfg.clock_align.as_str(), "left" | "center" | "right") {
+        cfg.clock_align = "center".into();
+    }
+    cfg.language = "en".into();
+}
+
 pub fn load_config() -> AppConfig {
     let path = config_path();
-    match fs::read_to_string(&path) {
+    let mut cfg = match fs::read_to_string(&path) {
         Ok(raw) => serde_json::from_str::<AppConfig>(&raw).unwrap_or_default(),
         Err(_) => {
-            let cfg = AppConfig::default();
-            let _ = save_config(&cfg);
-            cfg
+            let c = AppConfig::default();
+            let _ = save_config(&c);
+            c
         }
-    }
+    };
+    sanitize_config(&mut cfg);
+    cfg
 }
 
 pub fn save_config(cfg: &AppConfig) -> Result<(), String> {
+    let mut clean = cfg.clone();
+    sanitize_config(&mut clean);
     let path = config_path();
-    let json = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
+    let json = serde_json::to_string_pretty(&clean).map_err(|e| e.to_string())?;
     fs::write(path, json).map_err(|e| e.to_string())
 }
 

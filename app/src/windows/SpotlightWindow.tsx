@@ -1,15 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { AppWindow, Calculator, Search } from "lucide-react";
+import { AppWindow, Calculator, Check, Search } from "lucide-react";
 import { AppConfig, SpotlightSearchResult } from "../types";
 import { STRINGS } from "../i18n";
+import { clampSelectionIndex } from "../utils";
 
 export function SpotlightWindow() {
   const [query, setQuery] = useState("");
   const [res, setRes] = useState<SpotlightSearchResult>({ entries: [] });
   const [selected, setSelected] = useState(0);
   const [theme, setTheme] = useState("dark");
+  const [copiedMath, setCopiedMath] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -18,6 +20,7 @@ export function SpotlightWindow() {
     const unlisten = listen("antibar://spotlight-opened", () => {
       setQuery("");
       setSelected(0);
+      setCopiedMath(false);
       setTimeout(() => inputRef.current?.focus(), 40);
     });
     return () => {
@@ -27,20 +30,18 @@ export function SpotlightWindow() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
     invoke<SpotlightSearchResult>("search_spotlight", { query })
       .then((r) => {
+        if (cancelled) return;
         setRes(r);
-        setSelected(0);
+        setSelected((prev) => clampSelectionIndex(prev, r.entries.length));
       })
       .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, [query]);
-
-  const handleLaunch = async (idx: number) => {
-    const entry = res.entries[idx];
-    if (!entry) return;
-    await invoke("launch_app", { path: entry.path, args: null });
-    await invoke("hide_spotlight");
-  };
 
   const formattedMath = (() => {
     if (!res.mathAnswer) return null;
@@ -48,18 +49,37 @@ export function SpotlightWindow() {
     return Number.isFinite(n) ? n.toLocaleString(undefined, { maximumFractionDigits: 6 }) : res.mathAnswer;
   })();
 
+  const copyMath = async () => {
+    if (!res.mathAnswer) return;
+    await invoke("copy_clipboard_item", { text: res.mathAnswer, imageDataUrl: null }).catch(() => {});
+    setCopiedMath(true);
+    window.setTimeout(() => setCopiedMath(false), 1200);
+  };
+
+  const handleLaunch = async (idx: number) => {
+    if (res.entries.length === 0 && res.mathAnswer) {
+      await copyMath();
+      return;
+    }
+    const safeIdx = clampSelectionIndex(idx, res.entries.length);
+    const entry = res.entries[safeIdx];
+    if (!entry) return;
+    await invoke("launch_app", { path: entry.path, args: null }).catch(() => {});
+    await invoke("hide_spotlight").catch(() => {});
+  };
+
   return (
     <div
       className={`spotlight-wrap theme-${theme}`}
       onKeyDown={(e) => {
         if (e.key === "Escape") {
-          invoke("hide_spotlight");
+          invoke("hide_spotlight").catch(() => {});
         } else if (e.key === "ArrowDown") {
           e.preventDefault();
-          setSelected((s) => Math.min(s + 1, Math.max(0, res.entries.length - 1)));
+          setSelected((s) => clampSelectionIndex(s + 1, res.entries.length));
         } else if (e.key === "ArrowUp") {
           e.preventDefault();
-          setSelected((s) => Math.max(s - 1, 0));
+          setSelected((s) => clampSelectionIndex(s - 1, res.entries.length));
         } else if (e.key === "Enter") {
           e.preventDefault();
           handleLaunch(selected);
@@ -74,12 +94,15 @@ export function SpotlightWindow() {
             autoFocus
             className="spotlight-input"
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              setSelected(0);
+              setQuery(e.target.value);
+            }}
             placeholder={STRINGS.spotlightPlaceholder}
           />
           <button
             className="spotlight-kbd-btn"
-            onClick={() => invoke("hide_spotlight")}
+            onClick={() => invoke("hide_spotlight").catch(() => {})}
             title="Close Spotlight"
           >
             Esc close
@@ -88,13 +111,27 @@ export function SpotlightWindow() {
 
         <div className="spotlight-results">
           {formattedMath && (
-            <div className="spotlight-row" style={{ background: "rgba(14,165,233,0.14)", marginBottom: 6 }}>
+            <button
+              className="spotlight-row"
+              style={{ background: "rgba(14,165,233,0.14)", marginBottom: 6 }}
+              onClick={copyMath}
+              title="Click to copy calculation result"
+            >
               <Calculator size={20} color="#0ea5e9" />
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 18, fontWeight: 700 }}>= {formattedMath}</div>
                 <div className="muted-label" style={{ fontSize: 12 }}>{query}</div>
               </div>
-            </div>
+              <span className="spotlight-open-pill" style={{ background: copiedMath ? "#10b981" : undefined }}>
+                {copiedMath ? (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                    <Check size={11} /> Copied
+                  </span>
+                ) : (
+                  "Copy"
+                )}
+              </span>
+            </button>
           )}
 
           {res.entries.map((entry, idx) => {

@@ -17,7 +17,7 @@
         "title": "Anti-Bar Dock",
         "url": "index.html?view=dock",
         "width": 860,
-        "height": 118,
+        "height": 108,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,

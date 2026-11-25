@@ -28,6 +28,34 @@ pub fn clamp_volume(v: f32) -> f32 {
 }
 
 #[cfg(windows)]
+struct ComGuard {
+    should_uninit: bool,
+}
+
+#[cfg(windows)]
+impl ComGuard {
+    fn init() -> Self {
+        use windows::Win32::Foundation::{RPC_E_CHANGED_MODE, S_FALSE, S_OK};
+        use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+
+        let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let should_uninit = hr == S_OK || hr == S_FALSE || (hr != RPC_E_CHANGED_MODE && hr.is_ok());
+        Self { should_uninit }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ComGuard {
+    fn drop(&mut self) {
+        if self.should_uninit {
+            unsafe {
+                windows::Win32::System::Com::CoUninitialize();
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
 fn resolve_process_name(pid: u32) -> String {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{
@@ -74,13 +102,11 @@ pub fn list_audio_sessions() -> Vec<AudioSessionInfo> {
         eMultimedia, eRender, IAudioSessionControl2, IAudioSessionManager2, IMMDeviceEnumerator,
         ISimpleAudioVolume, MMDeviceEnumerator,
     };
-    use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
-    };
+    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
 
+    let _com = ComGuard::init();
     let mut sessions = Vec::new();
     unsafe {
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         let res = (|| -> Result<(), windows::core::Error> {
             let enumerator: IMMDeviceEnumerator =
                 CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
@@ -144,7 +170,6 @@ pub fn list_audio_sessions() -> Vec<AudioSessionInfo> {
             Ok(())
         })();
         let _ = res;
-        CoUninitialize();
     }
     sessions
 }
@@ -162,14 +187,12 @@ pub fn set_session_volume(pid: u32, is_master: bool, volume: f32, muted: bool) -
         eMultimedia, eRender, IAudioSessionControl2, IAudioSessionManager2, IMMDeviceEnumerator,
         ISimpleAudioVolume, MMDeviceEnumerator,
     };
-    use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
-    };
+    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
 
+    let _com = ComGuard::init();
     let vol = clamp_volume(volume);
     unsafe {
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-        let res = (|| -> Result<(), String> {
+        (|| -> Result<(), String> {
             let enumerator: IMMDeviceEnumerator =
                 CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).map_err(|e| e.to_string())?;
             let device = enumerator
@@ -209,9 +232,7 @@ pub fn set_session_volume(pid: u32, is_master: bool, volume: f32, muted: bool) -
                 }
             }
             Ok(())
-        })();
-        CoUninitialize();
-        res
+        })()
     }
 }
 
@@ -227,10 +248,7 @@ pub fn list_output_devices() -> Vec<AudioOutputDevice> {
         eMultimedia, eRender, IMMDeviceEnumerator, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
     };
     use windows::Win32::System::Com::StructuredStorage::PropVariantClear;
-    use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
-        COINIT_MULTITHREADED, STGM_READ,
-    };
+    use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_ALL, STGM_READ};
     use windows::Win32::UI::Shell::PropertiesSystem::PROPERTYKEY;
 
     // PKEY_Device_FriendlyName = {a45c254e-df1c-4efd-8020-67d146a850e0}, pid 14
@@ -239,9 +257,9 @@ pub fn list_output_devices() -> Vec<AudioOutputDevice> {
         pid: 14,
     };
 
+    let _com = ComGuard::init();
     let mut out = Vec::new();
     unsafe {
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         let _ = (|| -> Result<(), windows::core::Error> {
             let enumerator: IMMDeviceEnumerator =
                 CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
@@ -294,7 +312,6 @@ pub fn list_output_devices() -> Vec<AudioOutputDevice> {
             }
             Ok(())
         })();
-        CoUninitialize();
     }
     out
 }
@@ -308,23 +325,23 @@ pub fn list_output_devices() -> Vec<AudioOutputDevice> {
 pub fn set_default_output_device(device_id: &str) -> Result<(), String> {
     use std::ffi::c_void;
     use windows::core::{GUID, HRESULT, HSTRING, PCWSTR};
-    use windows::Win32::System::Com::{
-        CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
-    };
+    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
+
+    if device_id.trim().is_empty() {
+        return Err("Audio device ID cannot be empty".into());
+    }
 
     const CLSID_POLICY_CONFIG_CLIENT: GUID =
         GUID::from_u128(0x870af99c_171d_4f9e_af0d_e63df40c2bc9);
     const IID_POLICY_CONFIG: GUID = GUID::from_u128(0xf8679f50_850a_41cf_9c72_430f290290c8);
+    const IID_POLICY_CONFIG_VISTA: GUID = GUID::from_u128(0x568b9108_44bf_40b4_9006_86afe5b5a620);
 
     #[repr(C)]
     struct PolicyConfigVtbl {
-        // IUnknown
         query_interface: usize,
         add_ref: usize,
         release: unsafe extern "system" fn(*mut c_void) -> u32,
-        // IPolicyConfig (indices 3..12)
         _slots: [usize; 10],
-        // index 13: SetDefaultEndpoint(PCWSTR wszDeviceId, ERole role)
         set_default_endpoint:
             unsafe extern "system" fn(*mut c_void, PCWSTR, u32) -> HRESULT,
     }
@@ -334,19 +351,23 @@ pub fn set_default_output_device(device_id: &str) -> Result<(), String> {
         vtbl: *const PolicyConfigVtbl,
     }
 
+    let _com = ComGuard::init();
     let wide = HSTRING::from(device_id);
     unsafe {
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-        let res = (|| -> Result<(), String> {
+        (|| -> Result<(), String> {
             let mut ptr: *mut PolicyConfigObj = std::ptr::null_mut();
-            let hr = windows::Win32::System::Com::CoCreateInstance::<_, windows::core::IUnknown>(
+            let unk = CoCreateInstance::<_, windows::core::IUnknown>(
                 &CLSID_POLICY_CONFIG_CLIENT,
                 None,
                 CLSCTX_ALL,
-            );
-            let unk = hr.map_err(|e| format!("PolicyConfig init failed: {}", e))?;
+            )
+            .map_err(|e| format!("PolicyConfig init failed: {}", e))?;
             use windows::core::Interface;
-            let qhr = unk.query(&IID_POLICY_CONFIG, &mut ptr as *mut _ as *mut *mut c_void);
+            let mut qhr = unk.query(&IID_POLICY_CONFIG, &mut ptr as *mut _ as *mut *mut c_void);
+            if qhr.is_err() || ptr.is_null() {
+                ptr = std::ptr::null_mut();
+                qhr = unk.query(&IID_POLICY_CONFIG_VISTA, &mut ptr as *mut _ as *mut *mut c_void);
+            }
             if qhr.is_err() || ptr.is_null() {
                 return Err("IPolicyConfig interface unavailable on this Windows build".into());
             }
@@ -364,9 +385,7 @@ pub fn set_default_output_device(device_id: &str) -> Result<(), String> {
             }
             (vtbl.release)(ptr as *mut c_void);
             Ok(())
-        })();
-        CoUninitialize();
-        res
+        })()
     }
 }
 

@@ -2,20 +2,29 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Layers, LayoutGrid, Palette, Sliders, Sparkles } from "lucide-react";
-import { AppConfig } from "../types";
+import { AppConfig, IcsEvent } from "../types";
 import { STRINGS } from "../i18n";
+import { isValidHttpsUrl } from "../utils";
 
 type Tab = "appearance" | "dock" | "notch" | "widgets" | "behavior";
 
 export function SettingsWindow() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [tab, setTab] = useState<Tab>("appearance");
+  const [feedStatus, setFeedStatus] = useState<string>("");
   const saveTimer = useRef<number | null>(null);
+  const pendingConfig = useRef<AppConfig | null>(null);
 
   useEffect(() => {
     invoke<AppConfig>("get_config").then(setConfig).catch(() => {});
     const unlistenCfg = listen<AppConfig>("antibar://config-changed", (e) => setConfig(e.payload));
     return () => {
+      if (saveTimer.current) {
+        window.clearTimeout(saveTimer.current);
+        if (pendingConfig.current) {
+          invoke("update_config", { newConfig: pendingConfig.current }).catch(() => {});
+        }
+      }
       unlistenCfg.then((u) => u());
     };
   }, []);
@@ -24,9 +33,14 @@ export function SettingsWindow() {
     if (!config) return;
     const next = { ...config, ...partial };
     setConfig(next);
+    pendingConfig.current = next;
     if (saveTimer.current) window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(() => {
-      invoke("update_config", { newConfig: next }).catch(console.error);
+      const target = pendingConfig.current;
+      pendingConfig.current = null;
+      if (target) {
+        invoke("update_config", { newConfig: target }).catch(console.error);
+      }
     }, 70);
   };
 
@@ -131,22 +145,22 @@ export function SettingsWindow() {
               </div>
               <div className="setting-card">
                 <div>
-                  <div style={{ fontWeight: 600 }}>Vinyl Player</div>
-                  <div className="muted-label" style={{ fontSize: 12 }}>332px · {config.vinylStyle}</div>
+                  <div style={{ fontWeight: 600 }}>Vinyl Player Preset</div>
+                  <div className="muted-label" style={{ fontSize: 12 }}>SMTC in Notch · {config.vinylStyle}</div>
                 </div>
                 <input type="checkbox" checked={config.vinylEnabled} onChange={(e) => patch({ vinylEnabled: e.target.checked })} />
               </div>
               <div className="setting-card">
                 <div>
                   <div style={{ fontWeight: 600 }}>Calendar &amp; Agenda</div>
-                  <div className="muted-label" style={{ fontSize: 12 }}>{config.calendarLayout} · .ics sync</div>
+                  <div className="muted-label" style={{ fontSize: 12 }}>Dock Calendar · .ics feed</div>
                 </div>
                 <input type="checkbox" checked={config.calendarEnabled} onChange={(e) => patch({ calendarEnabled: e.target.checked })} />
               </div>
               <div className="setting-card">
                 <div>
-                  <div style={{ fontWeight: 600 }}>Sticky Memo</div>
-                  <div className="muted-label" style={{ fontSize: 12 }}>{config.memoStyle} · To-Do</div>
+                  <div style={{ fontWeight: 600 }}>Sticky Memo Preset</div>
+                  <div className="muted-label" style={{ fontSize: 12 }}>Layout preset · {config.memoStyle}</div>
                 </div>
                 <input type="checkbox" checked={config.memoEnabled} onChange={(e) => patch({ memoEnabled: e.target.checked })} />
               </div>
@@ -173,15 +187,38 @@ export function SettingsWindow() {
               <input type="range" min={56} max={180} value={config.clockSize} onChange={(e) => patch({ clockSize: Number(e.target.value) })} />
             </div>
             <div className="setting-row">
-              <span>iCal (.ics) Feed URL</span>
-              <input
-                type="text"
-                className="pill-select"
-                style={{ width: 240 }}
-                placeholder="https://calendar.google.com/..."
-                value={config.calendarIcsUrl}
-                onChange={(e) => patch({ calendarIcsUrl: e.target.value })}
-              />
+              <div>
+                <div>iCal (.ics) Feed URL</div>
+                {feedStatus && <div className="muted-label" style={{ fontSize: 11 }}>{feedStatus}</div>}
+              </div>
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <input
+                  type="text"
+                  className="pill-select"
+                  style={{ width: 220 }}
+                  placeholder="https://calendar.google.com/..."
+                  value={config.calendarIcsUrl}
+                  onChange={(e) => {
+                    setFeedStatus("");
+                    patch({ calendarIcsUrl: e.target.value });
+                  }}
+                />
+                <button
+                  className="icon-btn"
+                  onClick={() => {
+                    if (!isValidHttpsUrl(config.calendarIcsUrl)) {
+                      setFeedStatus("Enter a valid https:// URL");
+                      return;
+                    }
+                    setFeedStatus("Checking...");
+                    invoke<IcsEvent[]>("fetch_ics_agenda", { url: config.calendarIcsUrl })
+                      .then((ev) => setFeedStatus(`Loaded ${ev.length} events`))
+                      .catch(() => setFeedStatus("Failed to load feed"));
+                  }}
+                >
+                  Test
+                </button>
+              </div>
             </div>
           </div>
         )}
