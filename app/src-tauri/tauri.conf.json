@@ -25,7 +25,8 @@
         "resizable": false,
         "shadow": false,
         "focus": false,
-        "visible": true
+        "visible": true,
+        "additionalBrowserArgs": "--renderer-process-limit=1 --in-process-gpu --disable-crash-reporter --disk-cache-size=1 --media-cache-size=1 --js-flags=--max-old-space-size=48 --disable-gpu-shader-disk-cache --disable-features=BackForwardCache,Translate,msWebOOUI,msPdfOOUI,AutofillServerCommunication,MediaRouter"
       }
     ],
     "security": {

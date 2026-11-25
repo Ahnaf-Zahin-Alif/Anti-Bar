@@ -30,6 +30,7 @@ export interface AppConfig {
   autoHideDock: boolean;
   hideInFullscreen: boolean;
   hideWindowsTaskbar: boolean;
+  showDockClock: boolean;
   genieEffect: boolean;
   useWinKeyForLaunchpad: boolean;
   notchEnabled: boolean;
@@ -93,8 +94,9 @@ export interface SpotlightSearchResult {
 
 export interface ClipboardItem {
   id: string;
-  kind: "text" | "url" | string;
+  kind: "text" | "url" | "image" | string;
   content: string;
+  imageDataUrl?: string | null;
   pinned: boolean;
   timestampMs: number;
 }
@@ -107,6 +109,26 @@ export interface MediaState {
   positionSec: number;
   durationSec: number;
   hasSession: boolean;
+  thumbnailDataUrl?: string | null;
+}
+
+export interface AudioOutputDevice {
+  id: string;
+  name: string;
+  isDefault: boolean;
+}
+
+export interface WindowsNotificationItem {
+  id: number;
+  appName: string;
+  title: string;
+  body: string;
+  timestampMs: number;
+}
+
+export interface NotificationsSnapshot {
+  status: "allowed" | "denied" | "unspecified" | "unsupported" | string;
+  items: WindowsNotificationItem[];
 }
 
 export interface LyricLine {

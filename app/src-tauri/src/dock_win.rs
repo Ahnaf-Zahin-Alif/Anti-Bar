@@ -195,6 +195,10 @@ pub fn extract_path_icon_data_url(path: &str) -> Option<String> {
     };
 
     if let Ok(mut guard) = icon_cache().lock() {
+        if guard.len() >= 40 {
+            guard.clear();
+            guard.shrink_to_fit();
+        }
         guard.insert(key, result.clone());
     }
     result
@@ -386,6 +390,138 @@ pub fn toggle_window_hwnd(hwnd_val: isize) {
 }
 
 #[cfg(windows)]
+pub fn close_window_hwnd(hwnd_val: isize) {
+    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+
+    let hwnd = HWND(hwnd_val as *mut _);
+    unsafe {
+        let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
+    }
+}
+
+#[cfg(not(windows))]
+pub fn close_window_hwnd(_hwnd_val: isize) {}
+
+#[cfg(windows)]
+pub fn capture_window_preview(hwnd_val: isize) -> Option<String> {
+    use windows::Win32::Foundation::{HWND, RECT};
+    use windows::Win32::Graphics::Gdi::{
+        CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits,
+        SelectObject, SetStretchBltMode, StretchBlt, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+        DIB_RGB_COLORS, HALFTONE, SRCCOPY,
+    };
+    use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, IsIconic, IsWindow};
+
+    let hwnd = HWND(hwnd_val as *mut _);
+    unsafe {
+        if !IsWindow(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
+            return None;
+        }
+        let mut rect = RECT::default();
+        if GetWindowRect(hwnd, &mut rect).is_err() {
+            return None;
+        }
+        let src_w = (rect.right - rect.left).max(1);
+        let src_h = (rect.bottom - rect.top).max(1);
+        if src_w < 32 || src_h < 32 {
+            return None;
+        }
+
+        let max_w = 184.0_f64;
+        let max_h = 108.0_f64;
+        let ratio = (max_w / src_w as f64).min(max_h / src_h as f64).min(1.0);
+        let dst_w = ((src_w as f64 * ratio).round() as i32).max(48);
+        let dst_h = ((src_h as f64 * ratio).round() as i32).max(32);
+
+        let screen_dc = windows::Win32::Graphics::Gdi::GetDC(None);
+        let src_dc = CreateCompatibleDC(screen_dc);
+        let dst_dc = CreateCompatibleDC(screen_dc);
+        let src_bmp = CreateCompatibleBitmap(screen_dc, src_w, src_h);
+        let dst_bmp = CreateCompatibleBitmap(screen_dc, dst_w, dst_h);
+        windows::Win32::Graphics::Gdi::ReleaseDC(None, screen_dc);
+
+        if src_bmp.is_invalid() || dst_bmp.is_invalid() {
+            let _ = DeleteDC(src_dc);
+            let _ = DeleteDC(dst_dc);
+            if !src_bmp.is_invalid() {
+                let _ = DeleteObject(src_bmp);
+            }
+            if !dst_bmp.is_invalid() {
+                let _ = DeleteObject(dst_bmp);
+            }
+            return None;
+        }
+
+        let old_src = SelectObject(src_dc, src_bmp);
+        let old_dst = SelectObject(dst_dc, dst_bmp);
+
+        // PW_RENDERFULLCONTENT (2) captures GPU/DComp/WebView2 surfaces cleanly.
+        let ok = PrintWindow(hwnd, src_dc, PRINT_WINDOW_FLAGS(2)).as_bool();
+        if !ok {
+            let _ = PrintWindow(hwnd, src_dc, PRINT_WINDOW_FLAGS(0));
+        }
+
+        let _ = SetStretchBltMode(dst_dc, HALFTONE);
+        let _ = StretchBlt(dst_dc, 0, 0, dst_w, dst_h, src_dc, 0, 0, src_w, src_h, SRCCOPY);
+
+        let mut bi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: dst_w,
+                biHeight: -dst_h,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut bgra = vec![0u8; (dst_w * dst_h * 4) as usize];
+        let rows = GetDIBits(
+            dst_dc,
+            dst_bmp,
+            0,
+            dst_h as u32,
+            Some(bgra.as_mut_ptr() as *mut _),
+            &mut bi,
+            DIB_RGB_COLORS,
+        );
+
+        SelectObject(src_dc, old_src);
+        SelectObject(dst_dc, old_dst);
+        let _ = DeleteObject(src_bmp);
+        let _ = DeleteObject(dst_bmp);
+        let _ = DeleteDC(src_dc);
+        let _ = DeleteDC(dst_dc);
+
+        if rows == 0 {
+            return None;
+        }
+        for px in bgra.chunks_exact_mut(4) {
+            px.swap(0, 2);
+            px[3] = 255;
+        }
+
+        let mut png_bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png_bytes, dst_w as u32, dst_h as u32);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().ok()?;
+            writer.write_image_data(&bgra).ok()?;
+        }
+        Some(format!("data:image/png;base64,{}", STANDARD.encode(&png_bytes)))
+    }
+}
+
+#[cfg(not(windows))]
+pub fn capture_window_preview(_hwnd_val: isize) -> Option<String> {
+    None
+}
+
+#[cfg(windows)]
 pub fn launch_path(path: &str, args: Option<&str>) -> Result<(), String> {
     use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::UI::Shell::ShellExecuteW;
@@ -542,3 +678,123 @@ pub fn restore_taskbar_if_hidden() {
         set_windows_taskbar_hidden(false);
     }
 }
+
+#[cfg(windows)]
+pub fn toggle_windows_hidden_tray() {
+    use windows::core::w;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        FindWindowW, IsWindowVisible, SetForegroundWindow, ShowWindow, SW_HIDE, SW_SHOW,
+    };
+
+    unsafe {
+        if let Ok(overflow) = FindWindowW(w!("NotifyIconOverflowWindow"), None) {
+            if !overflow.0.is_null() {
+                if IsWindowVisible(overflow).as_bool() {
+                    let _ = ShowWindow(overflow, SW_HIDE);
+                } else {
+                    let _ = ShowWindow(overflow, SW_SHOW);
+                    let _ = SetForegroundWindow(overflow);
+                }
+                return;
+            }
+        }
+
+        // Fall back to Win+B to focus the system notification area on Windows 10/11.
+        const VK_LWIN: VIRTUAL_KEY = VIRTUAL_KEY(0x5B);
+        const VK_B: VIRTUAL_KEY = VIRTUAL_KEY(0x42);
+        let mk = |vk: VIRTUAL_KEY, up: bool| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: vk,
+                    wScan: 0,
+                    dwFlags: if up { KEYEVENTF_KEYUP } else { Default::default() },
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        let inputs = [
+            mk(VK_LWIN, false),
+            mk(VK_B, false),
+            mk(VK_B, true),
+            mk(VK_LWIN, true),
+        ];
+        let _ = SendInput(&inputs, size_of::<INPUT>() as i32);
+    }
+}
+
+#[cfg(not(windows))]
+pub fn toggle_windows_hidden_tray() {}
+
+#[cfg(windows)]
+pub fn trim_process_tree_memory() {
+    use std::collections::HashSet;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::System::ProcessStatus::K32EmptyWorkingSet;
+    use windows::Win32::System::Threading::{
+        GetCurrentProcess, OpenProcess, SetProcessWorkingSetSize, PROCESS_QUERY_LIMITED_INFORMATION,
+        PROCESS_SET_QUOTA,
+    };
+
+    unsafe {
+        let me = GetCurrentProcess();
+        let _ = SetProcessWorkingSetSize(me, usize::MAX, usize::MAX);
+        let _ = K32EmptyWorkingSet(me);
+
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+            return;
+        };
+        let mut pairs: Vec<(u32, u32)> = Vec::new();
+        let mut pe = PROCESSENTRY32W {
+            dwSize: size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        if Process32FirstW(snap, &mut pe).is_ok() {
+            loop {
+                pairs.push((pe.th32ProcessID, pe.th32ParentProcessID));
+                if Process32NextW(snap, &mut pe).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snap);
+
+        let mut tree = HashSet::new();
+        tree.insert(std::process::id());
+        loop {
+            let before = tree.len();
+            for &(pid, ppid) in &pairs {
+                if tree.contains(&ppid) {
+                    tree.insert(pid);
+                }
+            }
+            if tree.len() == before {
+                break;
+            }
+        }
+        tree.remove(&std::process::id());
+
+        for child_pid in tree {
+            if let Ok(h) = OpenProcess(
+                PROCESS_SET_QUOTA | PROCESS_QUERY_LIMITED_INFORMATION,
+                false,
+                child_pid,
+            ) {
+                let _ = SetProcessWorkingSetSize(h, usize::MAX, usize::MAX);
+                let _ = K32EmptyWorkingSet(h);
+                let _ = CloseHandle(h);
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn trim_process_tree_memory() {}

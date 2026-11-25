@@ -10,6 +10,8 @@ pub struct MediaState {
     pub position_sec: f64,
     pub duration_sec: f64,
     pub has_session: bool,
+    #[serde(default)]
+    pub thumbnail_data_url: Option<String>,
 }
 
 impl Default for MediaState {
@@ -22,8 +24,26 @@ impl Default for MediaState {
             position_sec: 0.0,
             duration_sec: 0.0,
             has_session: false,
+            thumbnail_data_url: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowsNotificationItem {
+    pub id: u32,
+    pub app_name: String,
+    pub title: String,
+    pub body: String,
+    pub timestamp_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationsSnapshot {
+    pub status: String,
+    pub items: Vec<WindowsNotificationItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +59,38 @@ pub struct LyricsResult {
     pub found: bool,
     pub synced: Vec<LyricLine>,
     pub plain: String,
+}
+
+static THUMB_CACHE: std::sync::OnceLock<std::sync::Mutex<(String, Option<String>)>> =
+    std::sync::OnceLock::new();
+
+#[cfg(windows)]
+fn read_thumbnail_data_url(
+    thumb_ref: &windows::Storage::Streams::IRandomAccessStreamReference,
+) -> Option<String> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use windows::Storage::Streams::{DataReader, InputStreamOptions};
+
+    let stream = thumb_ref.OpenReadAsync().ok()?.get().ok()?;
+    let size = stream.Size().ok()?.min(512 * 1024) as u32;
+    if size == 0 {
+        return None;
+    }
+    let input = stream.GetInputStreamAt(0).ok()?;
+    let reader = DataReader::CreateDataReader(&input).ok()?;
+    reader.SetInputStreamOptions(InputStreamOptions::ReadAhead).ok()?;
+    let loaded = reader.LoadAsync(size).ok()?.get().ok()?;
+    if loaded == 0 {
+        return None;
+    }
+    let mut buf = vec![0u8; loaded as usize];
+    reader.ReadBytes(&mut buf).ok()?;
+    let mime = if buf.starts_with(b"\x89PNG") {
+        "image/png"
+    } else {
+        "image/jpeg"
+    };
+    Some(format!("data:{};base64,{}", mime, STANDARD.encode(&buf)))
 }
 
 #[cfg(windows)]
@@ -68,6 +120,19 @@ pub fn read_current_media() -> MediaState {
             state.title = props.Title().map(|s| s.to_string()).unwrap_or_default();
             state.artist = props.Artist().map(|s| s.to_string()).unwrap_or_default();
             state.album = props.AlbumTitle().map(|s| s.to_string()).unwrap_or_default();
+            let cache_key = format!("{}::{}::{}", state.title, state.artist, state.album);
+            let cache = THUMB_CACHE.get_or_init(|| std::sync::Mutex::new((String::new(), None)));
+            let mut guard = cache.lock().unwrap();
+            if guard.0 == cache_key {
+                state.thumbnail_data_url = guard.1.clone();
+            } else {
+                let art = props
+                    .Thumbnail()
+                    .ok()
+                    .and_then(|r| read_thumbnail_data_url(&r));
+                *guard = (cache_key, art.clone());
+                state.thumbnail_data_url = art;
+            }
         }
     }
     if let Ok(pb) = session.GetPlaybackInfo() {
@@ -90,6 +155,40 @@ pub fn read_current_media() -> MediaState {
 #[cfg(not(windows))]
 pub fn read_current_media() -> MediaState {
     MediaState::default()
+}
+
+pub fn clamp_seek_seconds(position_sec: f64, duration_sec: f64) -> f64 {
+    if !position_sec.is_finite() || position_sec <= 0.0 {
+        return 0.0;
+    }
+    if duration_sec.is_finite() && duration_sec > 0.0 {
+        position_sec.min(duration_sec)
+    } else {
+        position_sec
+    }
+}
+
+#[cfg(windows)]
+pub fn seek_media_position(position_sec: f64) -> Result<(), String> {
+    use windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager;
+
+    let mgr = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
+        .map_err(|e| e.to_string())?
+        .get()
+        .map_err(|e| e.to_string())?;
+    let session = mgr.GetCurrentSession().map_err(|e| e.to_string())?;
+    let ticks = (position_sec.max(0.0) * 10_000_000.0) as i64;
+    session
+        .TryChangePlaybackPositionAsync(ticks)
+        .map_err(|e| e.to_string())?
+        .get()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn seek_media_position(_position_sec: f64) -> Result<(), String> {
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -482,4 +581,147 @@ pub fn execute_power_action(action: &str) -> Result<(), String> {
         "shutdown" => crate::dock_win::launch_path("shutdown.exe", Some("/s /t 0")),
         _ => Err("Unknown action".into()),
     }
+}
+
+#[cfg(windows)]
+pub fn list_notifications(request_if_needed: bool) -> NotificationsSnapshot {
+    use windows::UI::Notifications::Management::{
+        UserNotificationListener, UserNotificationListenerAccessStatus,
+    };
+    use windows::UI::Notifications::{KnownNotificationBindings, NotificationKinds};
+
+    let Ok(listener) = UserNotificationListener::Current() else {
+        return NotificationsSnapshot {
+            status: "unsupported".into(),
+            items: Vec::new(),
+        };
+    };
+
+    let mut status = listener
+        .GetAccessStatus()
+        .unwrap_or(UserNotificationListenerAccessStatus::Unspecified);
+    if status == UserNotificationListenerAccessStatus::Unspecified && request_if_needed {
+        if let Ok(op) = listener.RequestAccessAsync() {
+            if let Ok(next) = op.get() {
+                status = next;
+            }
+        }
+    }
+
+    let status_str = match status {
+        UserNotificationListenerAccessStatus::Allowed => "allowed",
+        UserNotificationListenerAccessStatus::Denied => "denied",
+        UserNotificationListenerAccessStatus::Unspecified => "unspecified",
+        _ => "unsupported",
+    };
+
+    if status != UserNotificationListenerAccessStatus::Allowed {
+        return NotificationsSnapshot {
+            status: status_str.into(),
+            items: Vec::new(),
+        };
+    }
+
+    let mut items = Vec::new();
+    if let Ok(op) = listener.GetNotificationsAsync(NotificationKinds::Toast) {
+        if let Ok(list) = op.get() {
+            let toast_binding = KnownNotificationBindings::ToastGeneric().ok();
+            let count = list.Size().unwrap_or(0);
+            for i in 0..count {
+                let Ok(n) = list.GetAt(i) else {
+                    continue;
+                };
+                let id = n.Id().unwrap_or(0);
+                let app_name = n
+                    .AppInfo()
+                    .ok()
+                    .and_then(|ai| ai.DisplayInfo().ok())
+                    .and_then(|di| di.DisplayName().ok())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "Windows".into());
+
+                let mut title = String::new();
+                let mut body_parts = Vec::new();
+                if let (Ok(notif), Some(ref tb)) = (n.Notification(), &toast_binding) {
+                    if let Ok(vis) = notif.Visual() {
+                        if let Ok(binding) = vis.GetBinding(tb) {
+                            if let Ok(texts) = binding.GetTextElements() {
+                                let tcount = texts.Size().unwrap_or(0);
+                                for ti in 0..tcount {
+                                    if let Ok(el) = texts.GetAt(ti) {
+                                        if let Ok(txt) = el.Text() {
+                                            let s = txt.to_string();
+                                            if !s.trim().is_empty() {
+                                                if ti == 0 {
+                                                    title = s;
+                                                } else {
+                                                    body_parts.push(s);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Windows DateTime UniversalTime = 100ns ticks since 1601-01-01
+                let timestamp_ms = n
+                    .CreationTime()
+                    .map(|dt| (dt.UniversalTime / 10_000) - 11_644_473_600_000)
+                    .unwrap_or(0);
+
+                items.push(WindowsNotificationItem {
+                    id,
+                    app_name,
+                    title: if title.is_empty() {
+                        "Notification".into()
+                    } else {
+                        title
+                    },
+                    body: body_parts.join(" · "),
+                    timestamp_ms,
+                });
+            }
+        }
+    }
+    items.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
+    items.truncate(24);
+    NotificationsSnapshot {
+        status: "allowed".into(),
+        items,
+    }
+}
+
+#[cfg(not(windows))]
+pub fn list_notifications(_request_if_needed: bool) -> NotificationsSnapshot {
+    NotificationsSnapshot {
+        status: "unsupported".into(),
+        items: Vec::new(),
+    }
+}
+
+#[cfg(windows)]
+pub fn dismiss_notification(id: u32) -> Result<(), String> {
+    use windows::UI::Notifications::Management::UserNotificationListener;
+    let listener = UserNotificationListener::Current().map_err(|e| e.to_string())?;
+    listener.RemoveNotification(id).map_err(|e| e.to_string())
+}
+
+#[cfg(not(windows))]
+pub fn dismiss_notification(_id: u32) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(windows)]
+pub fn clear_all_notifications() -> Result<(), String> {
+    use windows::UI::Notifications::Management::UserNotificationListener;
+    let listener = UserNotificationListener::Current().map_err(|e| e.to_string())?;
+    listener.ClearNotifications().map_err(|e| e.to_string())
+}
+
+#[cfg(not(windows))]
+pub fn clear_all_notifications() -> Result<(), String> {
+    Ok(())
 }

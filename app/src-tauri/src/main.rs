@@ -101,4 +101,30 @@ mod tests {
         let bytecode_len = native_ui::genie::verify_d3d11_shader_compile().expect("HLSL compile");
         assert!(bytecode_len > 0);
     }
+
+    #[test]
+    fn milestone4_wizzly_parity_helpers() {
+        assert_eq!(system_panels::clamp_seek_seconds(-4.0, 120.0), 0.0);
+        assert_eq!(system_panels::clamp_seek_seconds(140.0, 120.0), 120.0);
+        assert_eq!(system_panels::clamp_seek_seconds(45.5, 120.0), 45.5);
+
+        let mut clips = Vec::new();
+        assert!(clipboard::push_clipboard_image(
+            &mut clips,
+            "data:image/png;base64,AAA=".into()
+        ));
+        assert_eq!(clips[0].kind, "image");
+        assert!(!clipboard::push_clipboard_image(
+            &mut clips,
+            "data:image/png;base64,AAA=".into()
+        ));
+
+        let dev = audio_mixer::AudioOutputDevice {
+            id: "dev-1".into(),
+            name: "Headphones".into(),
+            is_default: true,
+        };
+        let json = serde_json::to_string(&dev).expect("serialize device");
+        assert!(json.contains("isDefault"));
+    }
 }

@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { Layers, LayoutGrid, Palette, Sliders, Sparkles } from "lucide-react";
 import { AppConfig } from "../types";
-import { resolveLang, STRINGS } from "../i18n";
+import { STRINGS } from "../i18n";
 
 type Tab = "appearance" | "dock" | "notch" | "widgets" | "behavior";
 
@@ -13,6 +14,10 @@ export function SettingsWindow() {
 
   useEffect(() => {
     invoke<AppConfig>("get_config").then(setConfig).catch(() => {});
+    const unlistenCfg = listen<AppConfig>("antibar://config-changed", (e) => setConfig(e.payload));
+    return () => {
+      unlistenCfg.then((u) => u());
+    };
   }, []);
 
   const patch = (partial: Partial<AppConfig>) => {
@@ -26,44 +31,42 @@ export function SettingsWindow() {
   };
 
   if (!config) return null;
-  const lang = resolveLang(config.language);
-  const t = STRINGS[lang];
 
   return (
-    <div className="settings-shell">
+    <div className={`settings-shell theme-${config.theme}`}>
       <aside className="settings-sidebar">
         <div style={{ fontSize: 16, fontWeight: 700, padding: "0 12px 14px" }}>Anti-Bar</div>
         <button className={`settings-nav-btn ${tab === "appearance" ? "active" : ""}`} onClick={() => setTab("appearance")}>
-          <Palette size={16} /> {t.tabAppearance}
+          <Palette size={16} /> {STRINGS.tabAppearance}
         </button>
         <button className={`settings-nav-btn ${tab === "dock" ? "active" : ""}`} onClick={() => setTab("dock")}>
-          <Layers size={16} /> {t.tabDock}
+          <Layers size={16} /> {STRINGS.tabDock}
         </button>
         <button className={`settings-nav-btn ${tab === "notch" ? "active" : ""}`} onClick={() => setTab("notch")}>
-          <Sparkles size={16} /> {t.tabNotch}
+          <Sparkles size={16} /> {STRINGS.tabNotch}
         </button>
         <button className={`settings-nav-btn ${tab === "widgets" ? "active" : ""}`} onClick={() => setTab("widgets")}>
-          <LayoutGrid size={16} /> {t.tabWidgets}
+          <LayoutGrid size={16} /> {STRINGS.tabWidgets}
         </button>
         <button className={`settings-nav-btn ${tab === "behavior" ? "active" : ""}`} onClick={() => setTab("behavior")}>
-          <Sliders size={16} /> {t.tabBehavior}
+          <Sliders size={16} /> {STRINGS.tabBehavior}
         </button>
       </aside>
 
       <main className="settings-main">
-        <h2 style={{ marginTop: 0 }}>{t.settingsTitle}</h2>
+        <h2 style={{ marginTop: 0 }}>{STRINGS.settingsTitle}</h2>
 
         {tab === "appearance" && (
           <div className="setting-group">
             <div className="setting-row">
-              <span>{t.themeLabel}</span>
+              <span>{STRINGS.themeLabel}</span>
               <select className="pill-select" value={config.theme} onChange={(e) => patch({ theme: e.target.value })}>
                 <option value="dark">Dark</option>
                 <option value="light">Light</option>
               </select>
             </div>
             <div className="setting-row">
-              <span>{t.materialLabel}</span>
+              <span>{STRINGS.materialLabel}</span>
               <select className="pill-select" value={config.glassMaterial} onChange={(e) => patch({ glassMaterial: e.target.value })}>
                 <option value="frosted">Frosted</option>
                 <option value="liquid">Liquid</option>
@@ -72,19 +75,11 @@ export function SettingsWindow() {
               </select>
             </div>
             <div className="setting-row">
-              <span>{t.iconStyle}</span>
+              <span>{STRINGS.iconStyle}</span>
               <select className="pill-select" value={config.iconStyle} onChange={(e) => patch({ iconStyle: e.target.value })}>
                 <option value="squircle">Squircle</option>
                 <option value="windows">Windows</option>
                 <option value="normalized">Normalized</option>
-              </select>
-            </div>
-            <div className="setting-row">
-              <span>{t.languageLabel}</span>
-              <select className="pill-select" value={config.language} onChange={(e) => patch({ language: e.target.value })}>
-                <option value="auto">Auto</option>
-                <option value="en">English (EN)</option>
-                <option value="id">Indonesian (ID)</option>
               </select>
             </div>
           </div>
@@ -93,16 +88,20 @@ export function SettingsWindow() {
         {tab === "dock" && (
           <div className="setting-group">
             <div className="setting-row">
-              <span>{t.iconSize}: {config.iconSize}px</span>
+              <span>{STRINGS.iconSize}: {config.iconSize}px</span>
               <input type="range" min={36} max={64} value={config.iconSize} onChange={(e) => patch({ iconSize: Number(e.target.value) })} />
             </div>
             <div className="setting-row">
-              <span>{t.magnification}: {config.magnification.toFixed(2)}x</span>
+              <span>{STRINGS.magnification}: {config.magnification.toFixed(2)}x</span>
               <input type="range" min={1.0} max={1.65} step={0.05} value={config.magnification} onChange={(e) => patch({ magnification: Number(e.target.value) })} />
             </div>
             <div className="setting-row">
-              <span>{t.hideInFullscreen}</span>
+              <span>{STRINGS.hideInFullscreen}</span>
               <input type="checkbox" checked={config.hideInFullscreen} onChange={(e) => patch({ hideInFullscreen: e.target.checked })} />
+            </div>
+            <div className="setting-row">
+              <span>Show Clock &amp; Notifications Pill on Dock</span>
+              <input type="checkbox" checked={config.showDockClock} onChange={(e) => patch({ showDockClock: e.target.checked })} />
             </div>
           </div>
         )}
@@ -110,11 +109,11 @@ export function SettingsWindow() {
         {tab === "notch" && (
           <div className="setting-group">
             <div className="setting-row">
-              <span>{t.notchEnabled}</span>
+              <span>{STRINGS.notchEnabled}</span>
               <input type="checkbox" checked={config.notchEnabled} onChange={(e) => patch({ notchEnabled: e.target.checked })} />
             </div>
             <div className="setting-row">
-              <span>{t.showLyrics}</span>
+              <span>{STRINGS.showLyrics}</span>
               <input type="checkbox" checked={config.showLyrics} onChange={(e) => patch({ showLyrics: e.target.checked })} />
             </div>
           </div>
@@ -123,31 +122,31 @@ export function SettingsWindow() {
         {tab === "widgets" && (
           <div className="setting-group">
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
-              <div style={{ padding: 12, borderRadius: 10, background: "rgba(255,255,255,0.04)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div className="setting-card">
                 <div>
                   <div style={{ fontWeight: 600 }}>Desktop Clock</div>
-                  <div style={{ fontSize: 12, color: "#94a3b8" }}>Direct2D · {config.clockStyle}</div>
+                  <div className="muted-label" style={{ fontSize: 12 }}>Direct2D · {config.clockStyle}</div>
                 </div>
                 <input type="checkbox" checked={config.clockEnabled} onChange={(e) => patch({ clockEnabled: e.target.checked })} />
               </div>
-              <div style={{ padding: 12, borderRadius: 10, background: "rgba(255,255,255,0.04)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div className="setting-card">
                 <div>
                   <div style={{ fontWeight: 600 }}>Vinyl Player</div>
-                  <div style={{ fontSize: 12, color: "#94a3b8" }}>332px · {config.vinylStyle}</div>
+                  <div className="muted-label" style={{ fontSize: 12 }}>332px · {config.vinylStyle}</div>
                 </div>
                 <input type="checkbox" checked={config.vinylEnabled} onChange={(e) => patch({ vinylEnabled: e.target.checked })} />
               </div>
-              <div style={{ padding: 12, borderRadius: 10, background: "rgba(255,255,255,0.04)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div className="setting-card">
                 <div>
                   <div style={{ fontWeight: 600 }}>Calendar &amp; Agenda</div>
-                  <div style={{ fontSize: 12, color: "#94a3b8" }}>{config.calendarLayout} · .ics sync</div>
+                  <div className="muted-label" style={{ fontSize: 12 }}>{config.calendarLayout} · .ics sync</div>
                 </div>
                 <input type="checkbox" checked={config.calendarEnabled} onChange={(e) => patch({ calendarEnabled: e.target.checked })} />
               </div>
-              <div style={{ padding: 12, borderRadius: 10, background: "rgba(255,255,255,0.04)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div className="setting-card">
                 <div>
                   <div style={{ fontWeight: 600 }}>Sticky Memo</div>
-                  <div style={{ fontSize: 12, color: "#94a3b8" }}>{config.memoStyle} · To-Do</div>
+                  <div className="muted-label" style={{ fontSize: 12 }}>{config.memoStyle} · To-Do</div>
                 </div>
                 <input type="checkbox" checked={config.memoEnabled} onChange={(e) => patch({ memoEnabled: e.target.checked })} />
               </div>
@@ -190,7 +189,7 @@ export function SettingsWindow() {
         {tab === "behavior" && (
           <div className="setting-group">
             <div className="setting-row">
-              <span>{t.genieEffect}</span>
+              <span>{STRINGS.genieEffect}</span>
               <input type="checkbox" checked={config.genieEffect} onChange={(e) => patch({ genieEffect: e.target.checked })} />
             </div>
             <div className="setting-row">

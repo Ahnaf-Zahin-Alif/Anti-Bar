@@ -10,15 +10,15 @@ A Windows 10/11 desktop companion providing a glass Dock, Dynamic Island Notch, 
 
 ## Quick Download (Windows x64)
 
-- **Portable ZIP (Recommended):** [`release/Anti-Bar-portable-win64.zip`](./release/Anti-Bar-portable-win64.zip) (6.0 MB) — extract both files to any folder and launch `anti-bar.exe`.
-- **Direct Binary:** [`release/anti-bar.exe`](./release/anti-bar.exe) (22.3 MB) — requires [`release/WebView2Loader.dll`](./release/WebView2Loader.dll) in the same directory and the Microsoft Edge WebView2 Runtime.
+- **Portable ZIP (Recommended):** [`release/Anti-Bar-portable-win64.zip`](./release/Anti-Bar-portable-win64.zip) (6.1 MB) — extract both files to any folder and launch `anti-bar.exe`.
+- **Direct Binary:** [`release/anti-bar.exe`](./release/anti-bar.exe) (22.7 MB) — requires [`release/WebView2Loader.dll`](./release/WebView2Loader.dll) in the same directory and the Microsoft Edge WebView2 Runtime.
 
 <!-- TODO: Capture and commit a desktop screenshot or GIF (e.g. docs/preview.png) if you want a live preview image in the README -->
 
 ## Features
 
-- **Glass Dock (`DockWindow.tsx`, `dock_win.rs`):** Renders pinned shortcuts alongside running Win32/UWP windows (`EnumWindows`) with PNG icon extraction, hover magnification, a Downloads stack popover, Recycle Bin counter/empty action, WASAPI per-app volume mixer (`audio_mixer.rs`), and Wi-Fi/battery/power Control Center (`system_panels.rs`).
-- **Dynamic Island Notch (`NotchWindow.tsx`, `system_panels.rs`, `clipboard.rs`):** Expandable top-center pill showing active Windows SMTC media metadata/controls, synced LRCLIB lyrics (`lrclib.net`), persisted clipboard history (pin/copy/clear), file shelf, and focus timer.
+- **Glass Dock (`DockWindow.tsx`, `dock_win.rs`):** Displays currently open Win32/UWP windows (`EnumWindows`) with live `PrintWindow` hover preview cards, PNG icon extraction, hover magnification, a **Sound Mixer** (per-app volume + default **Output** device switcher), **Hidden Icons** drawer (Spotlight, Month Calendar + live Windows Notifications, Control Center, Downloads stack, Trash, Windows Tray trigger, and taskbar/clock toggles), and **Settings**.
+- **Dynamic Island Notch (`NotchWindow.tsx`, `system_panels.rs`, `clipboard.rs`):** Hover/click top-center pill with pin mode, SMTC album artwork, animated equalizer bars, seekable playback progress bar, synced LRCLIB lyrics (`lrclib.net`), searchable text/link/image clipboard history, file shelf, and circular progress focus timer.
 - **Global Spotlight Launcher (`SpotlightWindow.tsx`, `spotlight.rs`, `win_hook.rs`):** Opens on `Alt + Space` (`Ctrl + Alt + Space` fallback, plus optional `WH_KEYBOARD_LL` Windows-key hook) to filter installed applications and evaluate arithmetic expressions locally.
 - **Taskbar-Safe Positioning & Opt-In Hiding (`lib.rs`, `dock_win.rs`):** Positions the Dock cleanly above the monitor `work_area()` by default, or hides `Shell_TrayWnd` and `Shell_SecondaryTrayWnd` when **Hide Windows Taskbar** is toggled—automatically restoring the Windows taskbar on quit or exit.
 - **Native Win32 Clock & GPU Modules (`native_ui/`):** Direct2D/DirectWrite desktop clock window (`desktop_clock.rs`), magnetic-snap widget layout & iCalendar `.ics` parser (`desktop_widgets.rs`), and compiled HLSL Direct3D11 Genie minimize shader (`genie.rs`).
@@ -143,6 +143,7 @@ Anti-Bar stores settings in `%APPDATA%\com.antibar.app\config.json` (editable vi
 | `iconSize` / `magnification` | Dock icon base size (`36..64`) & hover magnification (`1.0..1.65`) | `48` / `1.38` |
 | `hideInFullscreen` | Hides the Dock when a fullscreen app is active | `true` |
 | `hideWindowsTaskbar` | Hides Windows `Shell_TrayWnd` / secondary taskbars while running | `false` |
+| `showDockClock` | Displays a compact Clock & Notifications badge pill on the Dock | `false` |
 | `useWinKeyForLaunchpad` | Hooks Windows key tap (`WH_KEYBOARD_LL`) to toggle Spotlight | `false` |
 | `notchEnabled` / `showLyrics` | Toggles top Dynamic Island Notch and LRCLIB synced lyrics lookup | `true` / `true` |
 | `genieEffect` | Enables/disables the GPU Genie effect state | `true` |
@@ -180,7 +181,7 @@ cd app
 npx tsc --noEmit
 ```
 
-Run the Rust test suite (`6` tests covering config round-trip, Spotlight math evaluation, clipboard deduplication, LRC parsing, WASAPI clamp / Wi-Fi deduplication / power validation, widget snap / `.ics` parsing / D3D11 HLSL compilation):
+Run the Rust test suite (`7` tests covering config round-trip, Spotlight math evaluation, clipboard text/image deduplication, LRC parsing, WASAPI clamp / Wi-Fi deduplication / power validation, widget snap / `.ics` parsing / D3D11 HLSL compilation, and media seek clamping):
 ```powershell
 cd app/src-tauri
 cargo test --bin anti-bar

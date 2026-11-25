@@ -75,6 +75,31 @@ fn set_app_volume(pid: u32, is_master: bool, volume: f32, muted: bool) -> Result
 }
 
 #[tauri::command]
+fn get_audio_outputs() -> Vec<audio_mixer::AudioOutputDevice> {
+    audio_mixer::list_output_devices()
+}
+
+#[tauri::command]
+fn set_audio_output(device_id: String) -> Result<(), String> {
+    audio_mixer::set_default_output_device(&device_id)
+}
+
+#[tauri::command]
+fn get_notifications(request_access: Option<bool>) -> system_panels::NotificationsSnapshot {
+    system_panels::list_notifications(request_access.unwrap_or(false))
+}
+
+#[tauri::command]
+fn dismiss_notification(id: u32) -> Result<(), String> {
+    system_panels::dismiss_notification(id)
+}
+
+#[tauri::command]
+fn clear_notifications() -> Result<(), String> {
+    system_panels::clear_all_notifications()
+}
+
+#[tauri::command]
 fn get_wifi_networks() -> Vec<system_panels::WifiNetwork> {
     system_panels::list_wifi_networks()
 }
@@ -97,6 +122,16 @@ fn get_running_windows() -> Vec<dock_win::RunningWindow> {
 #[tauri::command]
 fn toggle_window(hwnd: isize) {
     dock_win::toggle_window_hwnd(hwnd);
+}
+
+#[tauri::command]
+fn close_window(hwnd: isize) {
+    dock_win::close_window_hwnd(hwnd);
+}
+
+#[tauri::command]
+fn get_window_preview(hwnd: isize) -> Option<String> {
+    dock_win::capture_window_preview(hwnd)
 }
 
 #[tauri::command]
@@ -125,6 +160,41 @@ fn open_trash() -> Result<(), String> {
 }
 
 #[tauri::command]
+fn open_hidden_tray() {
+    dock_win::toggle_windows_hidden_tray();
+}
+
+const BROWSER_ARGS: &str = "--renderer-process-limit=1 --in-process-gpu --disable-crash-reporter --disk-cache-size=1 --media-cache-size=1 --js-flags=--max-old-space-size=48 --disable-gpu-shader-disk-cache --disable-features=BackForwardCache,Translate,msWebOOUI,msPdfOOUI,AutofillServerCommunication,MediaRouter";
+
+#[cfg(windows)]
+fn apply_webview_memory_policy(win: &tauri::WebviewWindow, hidden: bool) {
+    let _ = win.with_webview(move |wv| unsafe {
+        use std::ffi::c_void;
+        use webview2_com::Microsoft::Web::WebView2::Win32::{
+            ICoreWebView2_19, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL,
+        };
+        use windows::core::{IUnknown, Interface, GUID};
+
+        const IID_ICOREWEBVIEW2_19: GUID =
+            GUID::from_u128(0x6921f954_79b0_437f_a997_c85811897c68);
+
+        let ctrl = wv.controller();
+        let _ = ctrl.SetIsVisible(!hidden);
+        if let Ok(core) = ctrl.CoreWebView2() {
+            let core_unk: &IUnknown = std::mem::transmute(&core);
+            let mut raw_19: *mut c_void = std::ptr::null_mut();
+            if core_unk.query(&IID_ICOREWEBVIEW2_19, &mut raw_19).is_ok() && !raw_19.is_null() {
+                let wv19: ICoreWebView2_19 = std::mem::transmute(raw_19);
+                let _ = wv19.SetMemoryUsageTargetLevel(COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL(1));
+            }
+        }
+    });
+}
+
+#[cfg(not(windows))]
+fn apply_webview_memory_policy(_win: &tauri::WebviewWindow, _hidden: bool) {}
+
+#[tauri::command]
 fn search_spotlight(state: State<AppState>, query: String) -> SpotlightSearchResult {
     let math_answer = spotlight::eval_math_expr(&query).map(|v| {
         if (v.fract()).abs() < 1e-9 {
@@ -138,7 +208,7 @@ fn search_spotlight(state: State<AppState>, query: String) -> SpotlightSearchRes
     });
 
     let q = query.trim().to_ascii_lowercase();
-    let entries = {
+    let mut entries: Vec<spotlight::SpotlightEntry> = {
         let mut cache = state.spotlight_cache.lock().unwrap();
         if cache.is_empty() {
             *cache = spotlight::index_installed_apps();
@@ -154,6 +224,12 @@ fn search_spotlight(state: State<AppState>, query: String) -> SpotlightSearchRes
                 .collect()
         }
     };
+
+    for e in &mut entries {
+        if e.icon_data_url.is_none() {
+            e.icon_data_url = dock_win::extract_path_icon_data_url(&e.path);
+        }
+    }
 
     SpotlightSearchResult {
         math_answer,
@@ -171,7 +247,12 @@ fn get_clipboard_history(state: State<AppState>) -> Vec<clipboard::ClipboardItem
 }
 
 #[tauri::command]
-fn copy_clipboard_item(text: String) -> Result<(), String> {
+fn copy_clipboard_item(text: String, image_data_url: Option<String>) -> Result<(), String> {
+    if let Some(img) = image_data_url {
+        if !img.is_empty() {
+            return clipboard::write_clipboard_png_data_url(&img);
+        }
+    }
     clipboard::write_clipboard_unicode_text(&text)
 }
 
@@ -204,6 +285,11 @@ fn control_media(action: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn seek_media(position_sec: f64) -> Result<(), String> {
+    system_panels::seek_media_position(position_sec)
+}
+
+#[tauri::command]
 fn fetch_lyrics(title: String, artist: String, album: String, duration_sec: f64) -> system_panels::LyricsResult {
     system_panels::fetch_synced_lyrics(&title, &artist, &album, duration_sec)
 }
@@ -211,24 +297,47 @@ fn fetch_lyrics(title: String, artist: String, album: String, duration_sec: f64)
 #[tauri::command]
 fn open_settings(app: AppHandle) {
     if let Some(win) = app.get_webview_window("settings") {
+        apply_webview_memory_policy(&win, false);
         let _ = win.show();
         let _ = win.set_focus();
         return;
     }
-    let _ = WebviewWindowBuilder::new(&app, "settings", WebviewUrl::App("index.html?view=settings".into()))
+    if let Ok(win) = WebviewWindowBuilder::new(&app, "settings", WebviewUrl::App("index.html?view=settings".into()))
         .title("Anti-Bar Settings")
         .inner_size(940.0, 660.0)
         .resizable(true)
+        .additional_browser_args(BROWSER_ARGS)
         .center()
-        .build();
+        .build()
+    {
+        apply_webview_memory_policy(&win, false);
+        let win_clone = win.clone();
+        win.on_window_event(move |event| match event {
+            tauri::WindowEvent::Resized(_) => {
+                let minimized = win_clone.is_minimized().unwrap_or(false);
+                apply_webview_memory_policy(&win_clone, minimized);
+                if minimized {
+                    dock_win::trim_process_tree_memory();
+                }
+            }
+            tauri::WindowEvent::Destroyed => {
+                std::thread::spawn(|| {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    dock_win::trim_process_tree_memory();
+                });
+            }
+            _ => {}
+        });
+    }
 }
 
 #[tauri::command]
 fn toggle_spotlight(app: AppHandle) {
     if let Some(win) = app.get_webview_window("spotlight") {
         if win.is_visible().unwrap_or(false) {
-            let _ = win.hide();
+            hide_spotlight(app);
         } else {
+            apply_webview_memory_policy(&win, false);
             let _ = win.center();
             let _ = win.show();
             let _ = win.set_focus();
@@ -244,9 +353,11 @@ fn toggle_spotlight(app: AppHandle) {
         .always_on_top(true)
         .skip_taskbar(true)
         .resizable(false)
+        .additional_browser_args(BROWSER_ARGS)
         .center()
         .build()
     {
+        apply_webview_memory_policy(&win, false);
         let _ = win.set_focus();
     }
 }
@@ -255,7 +366,16 @@ fn toggle_spotlight(app: AppHandle) {
 fn hide_spotlight(app: AppHandle) {
     if let Some(win) = app.get_webview_window("spotlight") {
         let _ = win.hide();
+        apply_webview_memory_policy(&win, true);
     }
+    if let Ok(mut cache) = app.state::<AppState>().spotlight_cache.lock() {
+        cache.clear();
+        cache.shrink_to_fit();
+    }
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        dock_win::trim_process_tree_memory();
+    });
 }
 
 #[tauri::command]
@@ -290,7 +410,7 @@ fn sync_notch_window(app: &AppHandle, enabled: bool) {
         if app.get_webview_window("notch").is_none() {
             if let Ok(win) = WebviewWindowBuilder::new(app, "notch", WebviewUrl::App("index.html?view=notch".into()))
                 .title("Anti-Bar Notch")
-                .inner_size(270.0, 52.0)
+                .inner_size(256.0, 46.0)
                 .decorations(false)
                 .transparent(true)
                 .always_on_top(true)
@@ -298,14 +418,17 @@ fn sync_notch_window(app: &AppHandle, enabled: bool) {
                 .resizable(false)
                 .shadow(false)
                 .focused(false)
+                .additional_browser_args(BROWSER_ARGS)
                 .build()
             {
-                position_top_center(&win, 270.0);
+                position_top_center(&win, 256.0);
+                apply_webview_memory_policy(&win, false);
             }
         }
     } else if let Some(win) = app.get_webview_window("notch") {
         let _ = win.hide();
         let _ = win.destroy();
+        dock_win::trim_process_tree_memory();
     }
 }
 
@@ -384,35 +507,92 @@ fn start_hotkey_listener(app: AppHandle) {
 
 fn start_background_pollers(app: AppHandle) {
     std::thread::spawn(move || {
+        let mut last_clip_seq = clipboard::clipboard_sequence_number();
         let mut last_clip = String::new();
+        let mut last_img = String::new();
         let mut last_fs = false;
+        let mut last_media_sig = String::new();
+        let mut last_track_key = String::new();
+        let mut tick_count: u64 = 0;
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(900));
-            if let Some(txt) = clipboard::read_clipboard_unicode_text() {
-                if txt != last_clip {
-                    last_clip = txt.clone();
-                    let state = app.state::<AppState>();
-                    let updated = {
-                        let mut guard = state.clipboard_history.lock().unwrap();
-                        if clipboard::push_clipboard_text(&mut guard, txt) {
-                            Some(guard.clone())
-                        } else {
-                            None
+            let sleep_ms = if last_fs { 2500 } else { 1500 };
+            std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
+            tick_count += 1;
+
+            let seq = clipboard::clipboard_sequence_number();
+            if seq != last_clip_seq || seq == 0 {
+                last_clip_seq = seq;
+                if let Some(txt) = clipboard::read_clipboard_unicode_text() {
+                    if txt != last_clip {
+                        last_clip = txt.clone();
+                        let state = app.state::<AppState>();
+                        let updated = {
+                            let mut guard = state.clipboard_history.lock().unwrap();
+                            if clipboard::push_clipboard_text(&mut guard, txt) {
+                                Some(guard.clone())
+                            } else {
+                                None
+                            }
+                        };
+                        if let Some(list) = updated {
+                            let _ = app.emit("antibar://clipboard-updated", &list);
                         }
-                    };
-                    if let Some(list) = updated {
-                        let _ = app.emit("antibar://clipboard-updated", &list);
+                    }
+                } else if let Some(img) = clipboard::read_clipboard_image_data_url() {
+                    if img != last_img {
+                        last_img = img.clone();
+                        let state = app.state::<AppState>();
+                        let updated = {
+                            let mut guard = state.clipboard_history.lock().unwrap();
+                            if clipboard::push_clipboard_image(&mut guard, img) {
+                                Some(guard.clone())
+                            } else {
+                                None
+                            }
+                        };
+                        if let Some(list) = updated {
+                            let _ = app.emit("antibar://clipboard-updated", &list);
+                        }
                     }
                 }
             }
 
-            let media = system_panels::read_current_media();
-            let _ = app.emit("antibar://media-updated", &media);
+            let mut media = system_panels::read_current_media();
+            let sig = format!(
+                "{}|{}|{}|{}|{}|{}",
+                media.has_session,
+                media.is_playing,
+                media.title,
+                media.artist,
+                media.position_sec.floor() as i64,
+                media.duration_sec.floor() as i64
+            );
+            if sig != last_media_sig {
+                last_media_sig = sig;
+                let tkey = format!("{}::{}::{}", media.title, media.artist, media.album);
+                if tkey == last_track_key {
+                    // Skip re-sending the base64 cover art every timeline tick.
+                    media.thumbnail_data_url = None;
+                } else {
+                    last_track_key = tkey;
+                }
+                let _ = app.emit("antibar://media-updated", &media);
+            }
 
             let fs_now = dock_win::is_fullscreen_active();
             if fs_now != last_fs {
                 last_fs = fs_now;
                 let _ = app.emit("antibar://fullscreen-changed", fs_now);
+                if let Some(dock) = app.get_webview_window("dock") {
+                    apply_webview_memory_policy(&dock, fs_now);
+                }
+                if fs_now {
+                    dock_win::trim_process_tree_memory();
+                }
+            }
+
+            if tick_count == 3 || tick_count % 20 == 0 {
+                dock_win::trim_process_tree_memory();
             }
         }
     });
@@ -466,16 +646,24 @@ pub fn run() {
             fetch_ics_agenda,
             get_audio_sessions,
             set_app_volume,
+            get_audio_outputs,
+            set_audio_output,
+            get_notifications,
+            dismiss_notification,
+            clear_notifications,
             get_wifi_networks,
             get_system_status,
             run_power_action,
             get_running_windows,
             toggle_window,
+            close_window,
+            get_window_preview,
             launch_app,
             get_downloads,
             get_trash_info,
             empty_trash,
             open_trash,
+            open_hidden_tray,
             search_spotlight,
             get_clipboard_history,
             copy_clipboard_item,
@@ -483,6 +671,7 @@ pub fn run() {
             clear_clipboard_history,
             get_media_state,
             control_media,
+            seek_media,
             fetch_lyrics,
             open_settings,
             toggle_spotlight,
@@ -494,7 +683,8 @@ pub fn run() {
 
             dock_win::set_windows_taskbar_hidden(hide_taskbar_on_start);
             if let Some(dock) = app.get_webview_window("dock") {
-                position_bottom_center(&dock, 860.0, 118.0, hide_taskbar_on_start);
+                position_bottom_center(&dock, 860.0, 108.0, hide_taskbar_on_start);
+                apply_webview_memory_policy(&dock, false);
             }
             sync_notch_window(&handle, show_notch);
             win_hook::set_win_key_hook_enabled(&handle, enable_win_hook);
@@ -531,7 +721,10 @@ pub fn run() {
                         if let Some(w) = app.get_webview_window("dock") {
                             if w.is_visible().unwrap_or(true) {
                                 let _ = w.hide();
+                                apply_webview_memory_policy(&w, true);
+                                dock_win::trim_process_tree_memory();
                             } else {
+                                apply_webview_memory_policy(&w, false);
                                 let _ = w.show();
                             }
                         }

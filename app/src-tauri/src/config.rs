@@ -44,6 +44,8 @@ pub struct AppConfig {
     pub auto_hide_dock: bool,
     pub hide_in_fullscreen: bool,
     pub hide_windows_taskbar: bool,   // opt-in, default false
+    #[serde(default)]
+    pub show_dock_clock: bool,        // optional clock + notifications pill in Dock
     pub genie_effect: bool,
     pub use_win_key_for_launchpad: bool, // opt-in, default false
     pub notch_enabled: bool,
@@ -72,7 +74,7 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            language: "auto".into(),
+            language: "en".into(),
             theme: "dark".into(),
             glass_material: "frosted".into(),
             wallpaper_tint: true,
@@ -82,6 +84,7 @@ impl Default for AppConfig {
             auto_hide_dock: false,
             hide_in_fullscreen: true,
             hide_windows_taskbar: false,
+            show_dock_clock: false,
             genie_effect: true,
             use_win_key_for_launchpad: false,
             notch_enabled: true,

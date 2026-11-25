@@ -77,14 +77,13 @@ pub fn index_installed_apps() -> Vec<SpotlightEntry> {
             continue;
         }
         let path_str = lnk.to_string_lossy().to_string();
-        let icon = crate::dock_win::extract_path_icon_data_url(&path_str);
         results.push(SpotlightEntry {
             id: format!("lnk:{}", path_str),
             name: stem.to_string(),
             subtitle: "Application".into(),
             path: path_str,
             kind: "app".into(),
-            icon_data_url: icon,
+            icon_data_url: None,
         });
     }
 
@@ -106,7 +105,7 @@ pub fn index_installed_apps() -> Vec<SpotlightEntry> {
                 subtitle: sub.into(),
                 path: cmd.into(),
                 kind: "system".into(),
-                icon_data_url: crate::dock_win::extract_path_icon_data_url(cmd),
+                icon_data_url: None,
             });
         }
     }
