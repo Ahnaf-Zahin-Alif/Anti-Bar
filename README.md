@@ -10,8 +10,8 @@ A Windows 10/11 desktop companion providing a glass Dock, Dynamic Island Notch, 
 
 ## Quick Download (Windows x64)
 
-- **Portable ZIP (Recommended):** [`release/Anti-Bar-portable-win64.zip`](./release/Anti-Bar-portable-win64.zip) (6.1 MB) — extract both files to any folder and launch `anti-bar.exe`.
-- **Direct Binary:** [`release/anti-bar.exe`](./release/anti-bar.exe) (22.7 MB) — requires [`release/WebView2Loader.dll`](./release/WebView2Loader.dll) in the same directory and the Microsoft Edge WebView2 Runtime.
+- **Root Executable (Clone & Run):** [`anti-bar.exe`](./anti-bar.exe) — launch directly from the repository root (uses [`WebView2Loader.dll`](./WebView2Loader.dll) in the same folder and the Microsoft Edge WebView2 Runtime).
+- **Portable ZIP:** [`release/Anti-Bar-portable-win64.zip`](./release/Anti-Bar-portable-win64.zip) (6.1 MB) — extract both files to any folder and launch `anti-bar.exe`.
 
 <!-- TODO: Capture and commit a desktop screenshot or GIF (e.g. docs/preview.png) if you want a live preview image in the README -->
 
@@ -55,6 +55,8 @@ flowchart LR
 
 ```text
 Anti-Bar/
+├── anti-bar.exe                    # Ready-to-run Windows x64 binary (--features custom-protocol)
+├── WebView2Loader.dll              # Required WebView2 loader alongside anti-bar.exe
 ├── .github/workflows/
 │   └── release.yml                 # Builds portable ZIP + NSIS installer on v* tags
 ├── .gitignore                      # Ignores node_modules, target, dist, dist-bin, shots
