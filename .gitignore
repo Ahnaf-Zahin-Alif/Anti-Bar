@@ -4,8 +4,9 @@ app/dist/
 app/dist-bin/
 app/src-tauri/target/
 
-# Verification screenshots & logs
+# Verification screenshots, tool state & logs
 site/shots/
+site/.taste-skill/
 *.log
 
 # OS files
