@@ -1,0 +1,494 @@
+<!doctype html>
+<html lang="en" data-type="software" data-radius="soft" data-ground="sand" data-buttons="solid" data-motion>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Anti-Bar: glass dock and notch for Windows</title>
+<meta name="description" content="Anti-Bar brings a glass dock, dynamic notch, Alt + Space launcher, and native Direct2D widgets to Windows 10 and 11.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Anti-Bar: glass dock and notch for Windows">
+<meta property="og:description" content="Glass dock, dynamic notch, clipboard history, and Alt + Space launcher for Windows 10 and 11.">
+<meta property="og:image" content="share.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#f7f7f5">
+<meta name="site-kind" content="software">
+<meta name="page-type" content="software">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Mona+Sans:wdth,wght@75..125,400..600&family=Geist+Mono:wght@400..500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/system.css">
+<link rel="stylesheet" href="assets/ui/cards.css">
+<link rel="stylesheet" href="assets/motion/motion.css">
+<link rel="stylesheet" href="assets/backgrounds/backgrounds.css">
+<link rel="stylesheet" href="assets/layout/layout.css">
+<link rel="stylesheet" href="assets/icons/icon.css">
+<style>
+:root {
+  --p-bg: #f7f7f5; --p-surface: #ebebe8; --p-ink: #000000; --p-muted: #575753;
+  --p-accent: #d0106f; --p-accent-ink: #ffffff; --p-action: #d0106f; --p-action-ink: #ffffff;
+  --p-inv-bg: #000000; --p-inv-surface: #010101; --p-inv-ink: #f7f7f5; --p-inv-muted: #828280;
+  --p-inv-accent: #d0106f; --p-inv-accent-ink: #ffffff; --p-inv-action: #d0106f; --p-inv-action-ink: #ffffff;
+  --font-display: "Mona Sans", system-ui, sans-serif;
+  --font-text: "Mona Sans", system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --display-weight: 500;
+  --display-tracking: -0.03em;
+  --display-tracking-xl: -0.04em;
+  --display-stretch: 104%;
+  --ly-scale: 0.96;
+}
+</style>
+<link rel="stylesheet" href="assets/ui/base.css">
+<link rel="stylesheet" href="assets/ui/window/fragment.css">
+<link rel="stylesheet" href="assets/ui/terminal-run/fragment.css">
+<link rel="stylesheet" href="assets/ui/notify/fragment.css">
+<link rel="stylesheet" href="assets/ui/search/fragment.css">
+<link rel="stylesheet" href="assets/ui/checklist/fragment.css">
+<link rel="stylesheet" href="assets/ui/toggles/fragment.css">
+<link rel="stylesheet" href="assets/ui/slider/fragment.css">
+<link rel="stylesheet" href="assets/moments/liquid-type/moment.css">
+<script>document.documentElement.classList.add('m-enter');setTimeout(()=>document.documentElement.classList.add('m-enter-done'),700)</script>
+<script src="assets/backgrounds/backgrounds.js"></script>
+<script>document.documentElement.classList.add('mo-js');setTimeout(()=>document.documentElement.classList.add('mo-safe'),2500)</script>
+<link rel="modulepreload" href="assets/moments/moments.js">
+<link rel="modulepreload" href="assets/moments/lib.js">
+<link rel="modulepreload" href="assets/moments/liquid-type/moment.js">
+<style>
+  .hero__art {
+    background:
+      radial-gradient(70% 60% at 18% 12%, color-mix(in oklab, var(--ground-surface) 80%, white), transparent 70%),
+      var(--ground-bg);
+  }
+  .d-win { background: #fff; color: #16181a; border-radius: 12px; overflow: hidden; font: 400 14px/1.4 var(--font-text);
+           box-shadow: 0 0 0 1px rgb(0 0 0 / .07), 0 24px 60px -28px rgb(0 0 0 / .45); text-align: left; }
+  .d-win__bar { display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 14px; border-bottom: 1px solid rgb(0 0 0 / .07); font-size: 13px; color: #52575d; }
+  .d-win__dots { display: flex; gap: 6px; } .d-win__dots i { width: 10px; height: 10px; border-radius: 50%; background: #dcdfe2; }
+  .d-win__body { display: grid; grid-template-columns: 150px 1fr; min-height: 400px; }
+  .d-side { padding: 14px 10px; border-right: 1px solid rgb(0 0 0 / .07); display: grid; align-content: start; gap: 2px; font-size: 13px; color: #4d5257; }
+  .d-side > span { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 8px; border-radius: 7px; }
+  .d-side > span.is-on { background: rgb(0 0 0 / .05); color: #16181a; font-weight: 500; }
+  .d-side > span i { width: 14px; height: 14px; border-radius: 4px; background: currentColor; opacity: .3; flex: none; }
+  .d-side .d-side__label { font-size: 13px; color: #595e64; height: 26px; margin-top: 8px; }
+  .d-main { padding: 16px 18px; display: grid; align-content: start; gap: 12px; min-width: 0; }
+  .d-main__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .d-main__head h4 { font: 600 16px/1.2 var(--font-text); letter-spacing: -0.01em; margin: 0; color: inherit; }
+  .d-btn { display: inline-flex; align-items: center; height: 28px; padding: 0 10px; border-radius: 7px; background: #16181a; color: #fff; font-size: 13px; font-weight: 500; }
+  .d-tabs { display: flex; gap: 4px; font-size: 13px; } .d-tabs span { padding: 4px 10px; border-radius: 99px; color: #595e64; } .d-tabs span.is-on { background: rgb(0 0 0 / .06); color: #16181a; font-weight: 500; }
+  .d-rows { display: grid; border-top: 1px solid rgb(0 0 0 / .07); }
+  .d-row { display: grid; grid-template-columns: 36px minmax(0, 1fr) 56px 96px; align-items: center; gap: 12px; padding: 9px 2px; border-bottom: 1px solid rgb(0 0 0 / .07); font-size: 13px; }
+  .d-row .d-thumb { width: 36px; height: 36px; border-radius: 8px; background: #eef0ee; }
+  .d-row b { display: block; font-weight: 500; color: #16181a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .d-row small { color: #595e64; font-size: 13px; }
+  .d-row .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .d-chip { justify-self: end; display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border-radius: 99px; font-size: 13px; font-weight: 500; background: #e7f4ec; color: #17673f; white-space: nowrap; }
+  .d-chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .d-chip--low { background: #fdf0dc; color: #8a5300; }
+  .d-card { background: #fff; color: #16181a; border-radius: 12px; padding: 14px 16px; font: 400 14px/1.4 var(--font-text); text-align: left;
+            box-shadow: 0 0 0 1px rgb(0 0 0 / .07), 0 18px 44px -20px rgb(0 0 0 / .45); }
+  .d-card h5 { margin: 0 0 4px; font: 600 14px/1.3 var(--font-text); }
+  .d-card__row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .hero__art > .ly-piece--note { left: var(--s-6); bottom: var(--s-6); width: 300px; z-index: 2; }
+  .d-note__line { display: flex; align-items: center; gap: 10px; padding: 7px 0; font-size: 13px; color: #2b2f34; border-top: 1px solid rgb(0 0 0 / .06); }
+  .d-note__line:first-of-type { border-top: 0; }
+  .d-note__line i { width: 18px; height: 18px; border-radius: 50%; flex: none; display: grid; place-items: center; background: #fce8f2; color: #9c0c54; font-style: normal; font-size: 12px; font-weight: 700; }
+  .d-note__line b { font-weight: 500; color: #16181a; }
+  .hero__proof { font-size: var(--t-small); color: var(--muted); }
+  .ly-piece--main .d-main { padding-right: var(--ly-cut-room); }
+  @media (max-width: 1023px) { .hero__art > .ly-piece--note { left: var(--s-4); bottom: var(--s-4); width: 270px; } }
+  @media (max-width: 639px) {
+    .d-win__body { grid-template-columns: 1fr; min-height: 0; }
+    .d-side { display: none; }
+    .ly-piece--main .d-row { grid-template-columns: 36px minmax(0, 1fr) 86px; }
+    .d-row .num { display: none; }
+    .d-row:nth-of-type(n+3) { display: none; }
+  }
+
+  .app.ui { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); margin-top: var(--s-7); background: var(--u-bg); border: 1px solid var(--u-border); border-radius: var(--u-r); box-shadow: var(--u-shadow); }
+  .app > .app__pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
+  .app > .app__pane + .app__pane { border-left: 1px solid var(--u-line); }
+  .app > .app__pane > .ui-panel { width: 100%; border: 0; border-radius: 0; box-shadow: none; }
+  .app > .app__pane::after { content: ""; position: absolute; inset: auto 0 0 0; height: 64px; background: linear-gradient(transparent, var(--u-bg)); pointer-events: none; }
+  .ui { --u-muted: #52524e; }
+  .ui-note__title time { color: #52524e; }
+  @media (min-width: 1024px) and (max-width: 1279px) { .app.ui { grid-template-columns: minmax(0, 4fr) minmax(0, 8fr); } }
+  @media (max-width: 1023px) {
+    .app.ui { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+    .app > .app__pane--list { max-height: 252px; }
+    .app > .app__pane--list::after { display: none; }
+    .app .ui-win__side { display: none; }
+    .app .ui-win__body { grid-template-columns: minmax(0, 1fr); }
+    .app > .app__pane + .app__pane { border-left: 0; border-top: 1px solid var(--u-line); }
+  }
+  @media (max-width: 639px) {
+    .app.ui { grid-template-rows: minmax(0, 1fr); }
+    .app > .app__pane--list { display: none; }
+    .app > .app__pane + .app__pane { border-top: 0; }
+  }
+
+  #features .panel { --p-h: 320px; }
+  #features .stage { --fade-h: 28px; }
+  @media (min-width: 640px) and (max-width: 1023px) {
+    #features .card.span-6 { grid-column: auto / span 6; }
+    #features .panel { --p-h: 240px; }
+  }
+  @media (max-width: 639px) { #features .panel { --p-h: 180px; } #features .stage { --fade-h: 24px; } }
+  #faq .frame--split { min-height: 460px; }
+  @media (max-width: 380px) { .nav__bar { gap: 8px; } .nav__actions .btn { padding-inline: 12px; font-size: 14px; } }
+  .break-path { overflow-wrap: anywhere; }
+  .footer__legal-links { display: flex; gap: 16px; }
+</style>
+</head>
+<body>
+<!-- type: software
+     deal: hero collage, nav nav-centre, close close-type, footer footer-statement, rhythm space, buttons solid, mark arc, effect silk-folds + painterly-landscape
+     moments: liquid-type in #runtime -->
+
+<header class="nav nav--centre">
+  <div class="wrap nav__bar">
+    <a class="skip-link" href="#top">Skip to content</a>
+    <a class="nav__logo" href="#top"><span class="mark" data-mark="arc" aria-hidden="true"></span>Anti-Bar</a>
+    <nav class="nav__links" aria-label="Main">
+      <div class="nav__item"><a class="nav__link" href="#dock">Dock</a></div>
+      <div class="nav__item"><a class="nav__link" href="#features">Features</a></div>
+      <div class="nav__item"><a class="nav__link" href="#runtime">Runtime</a></div>
+      <div class="nav__item"><a class="nav__link" href="#faq">Compatibility</a></div>
+    </nav>
+    <div class="nav__actions">
+      <a class="btn btn--primary" href="../release/Anti-Bar-portable-win64.zip" download="Anti-Bar-portable-win64.zip">Get Anti-Bar</a>
+    </div>
+    <button class="nav__toggle" type="button" aria-expanded="false" aria-label="Menu">
+      <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M2 5h14M2 13h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+</header>
+
+<main id="top">
+  <section class="hero hero--collage" data-enter aria-labelledby="hero-h">
+    <div class="wrap">
+      <div class="hero-text grid hero__grid">
+        <div class="hero__text span-5">
+          <h1 id="hero-h">Glass dock and notch for Windows</h1>
+          <p class="hero__lead">Anti-Bar pins running apps, media lyrics, clipboard history, and Alt + Space search into one Windows 11 desktop shell built with Rust.</p>
+          <div class="btn-row">
+            <a class="btn btn--primary" href="../release/Anti-Bar-portable-win64.zip" download="Anti-Bar-portable-win64.zip">Get Anti-Bar<svg class="m-arrow" viewBox="0 0 12 12" aria-hidden="true"><path class="m-arrow__stem" d="M1 6h8"/><path class="m-arrow__head" d="M4.5 2.5 8 6l-3.5 3.5"/></svg></a>
+            <a class="btn btn--secondary" href="#dock">Inspect shell</a>
+          </div>
+          <p class="hero__proof">6.0 MB portable zip for Windows 10 and Windows 11 (x64).</p>
+        </div>
+
+        <div class="hero__art span-6 start-7" data-fx="silk-folds" data-fx-seed="14" role="img" aria-label="Anti-Bar window manager showing running desktop apps and synced notch media status">
+          <div class="ly-piece ly-piece--main d-win" aria-hidden="true">
+            <div class="d-win__bar"><span class="d-win__dots"><i></i><i></i><i></i></span><span>Anti-Bar · Primary Display</span></div>
+            <div class="d-win__body">
+              <div class="d-side">
+                <span class="is-on"><i></i>Dock</span><span><i></i>Notch</span><span><i></i>Spotlight</span><span><i></i>Widgets</span><span><i></i>Behavior</span>
+                <span class="d-side__label">Display</span><span><i></i>Primary</span><span><i></i>4K HDR</span>
+              </div>
+              <div class="d-main">
+                <div class="d-main__head"><h4>Running apps</h4><span class="d-btn">Pin app</span></div>
+                <div class="d-tabs"><span class="is-on">Pinned 4</span><span>Running 6</span><span>Stacks 2</span></div>
+                <div class="d-rows">
+                  <div class="d-row"><span class="d-thumb" style="background:#dbeafe"></span><div><b>File Explorer</b><small>explorer.exe · shell</small></div><span class="num">Pin</span><span class="d-chip">Focused</span></div>
+                  <div class="d-row"><span class="d-thumb" style="background:#dcfce7"></span><div><b>Microsoft Edge</b><small>msedge.exe · tabs</small></div><span class="num">Pin</span><span class="d-chip">Running</span></div>
+                  <div class="d-row"><span class="d-thumb" style="background:#f3f4f6"></span><div><b>Windows Terminal</b><small>wt.exe · cargo</small></div><span class="num">Pin</span><span class="d-chip">Running</span></div>
+                  <div class="d-row"><span class="d-thumb" style="background:#fef3c7"></span><div><b>Spotify</b><small>SMTC · Notch</small></div><span class="num">Live</span><span class="d-chip d-chip--low">Playing</span></div>
+                  <div class="d-row"><span class="d-thumb" style="background:#e0e7ff"></span><div><b>Downloads Stack</b><small>24 recent files</small></div><span class="num">Grid</span><span class="d-chip">Ready</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="ly-piece ly-piece--note d-card" aria-hidden="true" data-ly-steps="700">
+            <div class="d-card__row"><h5>Notch &amp; Lyrics</h5><span class="d-chip" data-step data-step-at="4">Synced</span></div>
+            <div class="d-note__line" data-step><i>✓</i><span><b>SMTC session</b> bound to Spotify</span></div>
+            <div class="d-note__line" data-step><i>✓</i><span><b>LRCLIB</b> lines cached locally</span></div>
+            <div class="d-note__line" data-step><i>✓</i><span><b>Clipboard</b> holding 18 items</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="dock" aria-labelledby="dock-h">
+    <div class="wrap">
+      <div class="grid">
+        <div class="span-5">
+          <h2 id="dock-h">Dock window list. <span class="muted">Notch sits above.</span></h2>
+        </div>
+        <div class="span-6 start-7">
+          <p>Anti-Bar enumerates Win32 and Store windows, renders live application icons, and routes Alt + Space to installed apps and math. <a class="link" href="#features">Explore modules</a></p>
+        </div>
+      </div>
+
+      <div class="ui app fill" role="img" aria-label="Anti-Bar window inspector beside the Rust test runner" data-ui-pause-host>
+        <div class="app__pane app__pane--list">
+          <div class="ui ui-panel ui-win" data-ui="window" data-open="Running" data-work="Hook" data-done="Pinned">
+            <div class="ui-win__bar">
+              <span class="ui-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span class="ui-win__crumb">Anti-Bar <i>/</i> <b>Windows</b></span>
+              <span class="ui-spacer"></span>
+              <span class="ui-win__search" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg><span class="ui-win__ph">Filter</span><span class="ui-kbd">/</span></span>
+            </div>
+            <div class="ui-win__body">
+              <nav class="ui-win__side" aria-hidden="true">
+                <span class="ui-win__nav is-on">Dock<em>10</em></span>
+                <span class="ui-win__nav">Notch<em>4</em></span>
+                <span class="ui-win__nav">Widgets<em>4</em></span>
+                <span class="ui-win__nav">Tray</span>
+                <span class="ui-win__label">Layers</span>
+                <span class="ui-win__nav"><span class="ui-win__hash">#</span>Frosted</span>
+                <span class="ui-win__nav"><span class="ui-win__hash">#</span>Direct2D</span>
+              </nav>
+              <div class="ui-win__main">
+                <div class="ui-win__cols" aria-hidden="true"><span>App</span><span>Module</span><span>State</span><span>Mode</span></div>
+                <ul class="ui-win__rows">
+                  <li class="ui-win__row" data-row><span class="ui-avatar" data-tone="1">FE</span><span class="ui-win__who">Explorer</span><span class="ui-win__sub">dock_win.rs</span><span class="ui-win__st" data-st>Pinned</span><span class="ui-win__age">Win32</span></li>
+                  <li class="ui-win__row" data-row><span class="ui-avatar" data-tone="3">ME</span><span class="ui-win__who">Edge</span><span class="ui-win__sub">dock_win.rs</span><span class="ui-win__st" data-st>Focused</span><span class="ui-win__age">x64</span></li>
+                  <li class="ui-win__row" data-row><span class="ui-avatar" data-tone="4">WT</span><span class="ui-win__who">Terminal</span><span class="ui-win__sub">EnumWindows</span><span class="ui-win__st" data-st>Running</span><span class="ui-win__age">UWP</span></li>
+                  <li class="ui-win__row" data-row><span class="ui-avatar" data-tone="2">SP</span><span class="ui-win__who">Spotify</span><span class="ui-win__sub">SMTC Notch</span><span class="ui-win__st is-you" data-st>Playing</span><span class="ui-win__age">Notch</span></li>
+                  <li class="ui-win__row" data-row><span class="ui-avatar" data-tone="5">CB</span><span class="ui-win__who">Clipboard</span><span class="ui-win__sub">clipboard.rs</span><span class="ui-win__st is-done" data-st>Active</span><span class="ui-win__age">Local</span></li>
+                  <li class="ui-win__row" data-row><span class="ui-avatar" data-tone="3">SL</span><span class="ui-win__who">Spotlight</span><span class="ui-win__sub">spotlight.rs</span><span class="ui-win__st is-done" data-st>Indexed</span><span class="ui-win__age">Hook</span></li>
+                  <li class="ui-win__row" data-row><span class="ui-avatar" data-tone="1">DL</span><span class="ui-win__who">Downloads</span><span class="ui-win__sub">24 items</span><span class="ui-win__st is-done" data-st>Ready</span><span class="ui-win__age">Stack</span></li>
+                  <li class="ui-win__row" data-row><span class="ui-avatar" data-tone="4">GN</span><span class="ui-win__who">Genie GPU</span><span class="ui-win__sub">genie.rs</span><span class="ui-win__st is-done" data-st>D3D11</span><span class="ui-win__age">VSync</span></li>
+                  <li class="ui-win__row" data-row><span class="ui-avatar" data-tone="2">CK</span><span class="ui-win__who">Clock</span><span class="ui-win__sub">Direct2D</span><span class="ui-win__st is-done" data-st>Layer</span><span class="ui-win__age">D2D</span></li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="app__pane app__pane--open">
+          <div class="ui ui-panel ui-term" data-ui="terminal-run">
+            <div class="ui-term__head">
+              <span class="ui-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span class="ui-term__title">anti-bar/src-tauri</span>
+              <span class="ui-meta">pwsh</span>
+              <span class="ui-spacer"></span>
+              <span class="ui-chip ui-chip--plain ui-term__branch">main</span>
+            </div>
+            <div class="ui-term__screen" data-term-screen>
+              <div class="ui-term__track" data-term-track>
+                <div class="ui-term__ln ui-term__cmd"><span class="ui-term__cwd">~/<span class="ui-term__up">anti-bar</span></span><span class="ui-term__sig">$</span><span class="ui-term__typed" data-term-cmd>cargo test</span></div>
+                <div class="ui-term__ln ui-term__meter" data-term-out data-term-meter><span class="ui-term__bar" style="--p:1"><i></i></span><span class="ui-term__count" data-term-count>6 of 6 tests</span></div>
+                <div class="ui-term__ln ui-term__log" data-term-out data-term-step><svg class="ui-term__tick" viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 8.4 2.8 2.8 6.2-6.4"/></svg><span class="ui-term__path">config::tests</span><span class="ui-term__n">roundtrip</span><span class="ui-term__t">2ms</span></div>
+                <div class="ui-term__ln ui-term__log" data-term-out data-term-step><svg class="ui-term__tick" viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 8.4 2.8 2.8 6.2-6.4"/></svg><span class="ui-term__path">spotlight::tests</span><span class="ui-term__n">math eval</span><span class="ui-term__t">1ms</span></div>
+                <div class="ui-term__ln ui-term__log" data-term-out data-term-step><svg class="ui-term__tick" viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 8.4 2.8 2.8 6.2-6.4"/></svg><span class="ui-term__path">audio_mixer::tests</span><span class="ui-term__n">wasapi</span><span class="ui-term__t">1ms</span></div>
+                <div class="ui-term__ln ui-term__log" data-term-out data-term-step><svg class="ui-term__tick" viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 8.4 2.8 2.8 6.2-6.4"/></svg><span class="ui-term__path">native_ui::genie</span><span class="ui-term__n">hlsl compile</span><span class="ui-term__t">8ms</span></div>
+                <div class="ui-term__ln ui-term__gap" data-term-out aria-hidden="true"></div>
+                <div class="ui-term__ln ui-term__sum" data-term-out><span class="ui-term__key">Suites</span><span class="ui-term__val">6 passed</span><span class="ui-term__dim">(6)</span></div>
+                <div class="ui-term__ln ui-term__sum" data-term-out><span class="ui-term__key">Storage</span><span class="ui-term__val">com.antibar.app</span></div>
+                <div class="ui-term__ln ui-term__done" data-term-out data-term-done><span class="ui-term__ok"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4.5 8.3 2.4 2.4 4.6-5"/></svg></span><b>Ready</b><span class="ui-term__dim">in 1.07s</span></div>
+                <div class="ui-term__ln ui-term__cmd" data-term-next><span class="ui-term__cwd">~/<span class="ui-term__up">anti-bar</span></span><span class="ui-term__sig">$</span><span class="ui-term__typed"></span><i class="ui-term__caret" aria-hidden="true"></i></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section g2" id="features" aria-labelledby="features-h">
+    <div class="wrap">
+      <div class="group">
+        <div class="section-head">
+          <h2 id="features-h">Windows desktop features. <span class="muted">Four modules inside one shell.</span></h2>
+        </div>
+        <div class="grid">
+          <article class="card card--row card--open span-6">
+            <h3>Notch media and lyrics</h3>
+            <p>Reads Windows SMTC playback state, fetches timestamped LRCLIB lines, and shows focus alerts.</p>
+            <div class="panel" data-fx="painterly-landscape" data-fx-seed="21" data-fx-params='{"drift":0}'>
+              <div class="stage"><div class="at-rise fit" style="--fit-max:380px;--ax:max(24px, 50% - 190px);--ay:48px;--ay-sm:24px" data-ui-loop>
+                <div class="ui ui-notify" data-ui="notify">
+                  <ul class="ui-notify__list" data-notify-list>
+                    <li class="ui-note"><span class="ui-agent ui-note__av" aria-hidden="true"></span><span class="ui-note__text"><span class="ui-note__title">Notch synced lyrics<time>now</time></span><span class="ui-note__body">42 LRC lines loaded</span></span><span class="ui-btn ui-btn--sm ui-note__btn">Open</span></li>
+                    <li class="ui-note"><span class="ui-avatar ui-note__av" data-tone="5">SP</span><span class="ui-note__text"><span class="ui-note__title">Spotify SMTC active<time>1m</time></span><span class="ui-note__body">Play, pause, next ready</span></span></li>
+                  </ul>
+                </div>
+              </div></div>
+            </div>
+          </article>
+
+          <article class="card card--row card--open span-6">
+            <h3>Spotlight app search</h3>
+            <p>Indexes Start Menu shortcuts and evaluates math inline with Alt + Space.</p>
+            <div class="panel" data-fx="painterly-landscape" data-fx-seed="22" data-fx-params='{"drift":0}'>
+              <div class="stage stage--fade-b"><div class="at-rise fit to-edge" style="--fit-max:380px;--ax:max(24px, 50% - 190px);--ay:36px;--ay-sm:20px">
+                <div class="ui ui-panel ui-search" data-ui="search">
+                  <div class="ui-search__field">
+                    <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+                    <span class="ui-search__q"><span data-search-q>24 * 18</span><i class="ui-search__caret"></i></span>
+                    <kbd class="ui-search__kbd">Alt Space</kbd>
+                  </div>
+                  <div class="ui-search__group">Results</div>
+                  <ul class="ui-search__list" data-search-list>
+                    <li class="ui-search__row is-sel"><span class="ui-search__ico"><svg class="ui-icon" viewBox="0 0 16 16"><path d="M4 2.5h5l3 3v8H4z"/></svg></span><span class="ui-search__t"><b>= 432</b></span><span class="ui-search__m">Math</span></li>
+                    <li class="ui-search__row"><span class="ui-search__ico"><svg class="ui-icon" viewBox="0 0 16 16"><path d="M4 2.5h5l3 3v8H4z"/></svg></span><span class="ui-search__t">Terminal</span><span class="ui-search__m">App</span></li>
+                  </ul>
+                  <div class="ui-search__foot"><span><kbd>&uarr;</kbd><kbd>&darr;</kbd> move</span><span><kbd>Enter</kbd> open</span></div>
+                </div>
+              </div></div>
+            </div>
+          </article>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="grid">
+          <article class="card card--row card--open span-6">
+            <h3>Clipboard history shelf</h3>
+            <p>Captures copied text and links locally, pins favorites, and holds dragged files.</p>
+            <div class="panel" data-fx="painterly-landscape" data-fx-seed="23" data-fx-params='{"drift":0}'>
+              <div class="stage"><div class="at-rise fit" style="--fit-max:380px;--ax:max(24px, 50% - 190px);--ay:44px;--ay-sm:20px">
+                <div class="ui ui-panel ui-checks" data-ui="checklist">
+                  <div class="ui-checks__head">
+                    <div class="ui-title">Notch Shelf &amp; Clipboard</div>
+                    <span class="ui-spacer"></span>
+                    <div class="ui-meta" data-checks-count>2 of 3</div>
+                  </div>
+                  <div class="ui-checks__bar"><i data-checks-bar style="--k:0.66"></i></div>
+                  <ul class="ui-checks__list">
+                    <li class="ui-check is-done"><span class="ui-check__box"><svg viewBox="0 0 16 16"><path d="m4.5 8.2 2.3 2.3 4.7-5"/></svg></span><span class="ui-check__label">Pin build command</span></li>
+                    <li class="ui-check is-done"><span class="ui-check__box"><svg viewBox="0 0 16 16"><path d="m4.5 8.2 2.3 2.3 4.7-5"/></svg></span><span class="ui-check__label">Hold file in Shelf</span></li>
+                    <li class="ui-check"><span class="ui-check__box"><svg viewBox="0 0 16 16"><path d="m4.5 8.2 2.3 2.3 4.7-5"/></svg></span><span class="ui-check__label">Sync .ics calendar</span></li>
+                  </ul>
+                </div>
+              </div></div>
+            </div>
+          </article>
+
+          <article class="card card--row card--open span-6">
+            <h3>Dock glass controls</h3>
+            <p>Switches Frosted, Liquid, Matte, and Classic styles while keeping taskbar hooks opt-in.</p>
+            <div class="panel" data-fx="painterly-landscape" data-fx-seed="24" data-fx-params='{"drift":0}'>
+              <div class="stage stage--fade-b"><div class="at-right to-edge" style="--ax:32px;--ay:40px;--ay-sm:20px">
+                <div class="ui ui-panel ui-toggles" data-ui="toggles">
+                  <div class="ui-head">
+                    <svg class="ui-icon ui-toggles__ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.8 13 4v3.6c0 3-2.1 5.4-5 6.6-2.9-1.2-5-3.6-5-6.6V4z"/><path d="m5.8 8 1.6 1.6 3-3.2"/></svg>
+                    <div class="ui-title">Shell behavior</div>
+                    <span class="ui-spacer"></span>
+                    <div class="ui-meta" data-tg-count>2 of 3 on</div>
+                  </div>
+                  <ul class="ui-toggles__list">
+                    <li class="ui-tg">
+                      <span class="ui-tg__text"><span class="ui-tg__label">Hide in fullscreen</span><span class="ui-tg__sub">Games and video</span></span>
+                      <button class="ui-switch is-on" type="button" role="switch" aria-checked="true" aria-label="Hide in fullscreen"><i></i></button>
+                    </li>
+                    <li class="ui-tg">
+                      <span class="ui-tg__text"><span class="ui-tg__label">Enable Notch</span><span class="ui-tg__sub">Top overlay pill</span></span>
+                      <button class="ui-switch is-on" type="button" role="switch" aria-checked="true" aria-label="Enable Notch"><i></i></button>
+                    </li>
+                    <li class="ui-tg">
+                      <span class="ui-tg__text"><span class="ui-tg__label">Hide taskbar</span><span class="ui-tg__sub">Opt-in StuckRects3</span></span>
+                      <button class="ui-switch" type="button" role="switch" aria-checked="false" aria-label="Hide taskbar"><i></i></button>
+                    </li>
+                  </ul>
+                </div>
+              </div></div>
+            </div>
+          </article>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section statement" id="runtime" data-moment="liquid-type" aria-labelledby="arch-h">
+    <div class="wrap">
+      <h2 class="mo-lt__type" id="arch-h">Native Win32 speed</h2>
+      <p class="t-lead measure" style="margin-top:var(--s-5)">Desktop widgets, window enumeration, and the Genie minimize shader run in compiled Rust over Win32, Direct2D, and Direct3D11.</p>
+      <ul class="rows" style="margin-top:var(--s-6)">
+        <li><span class="rows__name">Local configuration</span><span class="rows__value break-path">%APPDATA%\<wbr>com.antibar.app</span></li>
+        <li><span class="rows__name">Spotlight hotkey</span><span class="rows__value">Alt + Space</span></li>
+        <li><span class="rows__name">External lyrics lookup</span><span class="rows__value">lrclib.net</span></li>
+        <li><span class="rows__name">Supported OS</span><span class="rows__value">Windows 10 / 11 (x64)</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section" id="faq" aria-labelledby="faq-h">
+    <div class="wrap">
+      <div class="grid grid--top">
+        <div class="span-5">
+          <div class="section-head">
+            <h2 id="faq-h">Compatibility and specs</h2>
+          </div>
+          <div class="faq">
+            <div class="faq__item">
+              <h3>Anti-Bar beside Wizzly</h3>
+              <p>Quit Wizzly before launching Anti-Bar so Alt + Space and screen edges do not collide.</p>
+            </div>
+            <div class="faq__item">
+              <h3>Windows build tools</h3>
+              <p>Requires Node 22+, Rust, and Edge WebView2, plus MSVC Build Tools for NSIS packaging.</p>
+            </div>
+            <div class="faq__item">
+              <h3>Anti-Bar storage and LRCLIB</h3>
+              <p>Settings and clipboard stay on disk. Only song metadata queries lrclib.net when enabled.</p>
+            </div>
+            <div class="faq__item">
+              <h3>Opt-in Windows taskbar sync</h3>
+              <p>Taskbar hiding and Start key hooking stay off until enabled in Anti-Bar Settings.</p>
+            </div>
+          </div>
+        </div>
+        <div class="frame frame--split frame--lit span-6 start-7" role="img" aria-label="Anti-Bar Dock appearance controls">
+          <div class="stage"><div class="at-rise fit" style="--fit-max:340px;--ax:max(24px, 50% - 170px);--ay:64px;--ay-sm:24px">
+            <div class="ui ui-panel ui-slider" data-ui="slider">
+              <div class="ui-slider__head">
+                <span class="ui-slider__ico" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="4" cy="4" r="1.1"/><circle cx="8" cy="4" r="1.1"/><circle cx="12" cy="4" r="1.1"/><circle cx="4" cy="8" r="1.1"/><circle cx="8" cy="8" r="1.1"/><circle cx="12" cy="8" r="1.1"/></svg></span>
+                <span class="ui-slider__name"><span class="ui-title">Dock glass</span><span class="ui-meta">Appearance</span></span>
+                <span class="ui-spacer"></span>
+                <span class="ui-slider__reset">Reset</span>
+              </div>
+              <div class="ui-slider__row">
+                <div class="ui-slider__top"><span>Icon size</span><output data-slider-val>48</output></div>
+                <div class="ui-slider__track" data-slider-track style="--v:0.45"><i class="ui-slider__fill"></i><i class="ui-slider__thumb"></i></div>
+              </div>
+              <div class="ui-slider__row">
+                <div class="ui-slider__top"><span>Magnify</span><output>1.38x</output></div>
+                <div class="ui-slider__track" style="--v:0.6"><i class="ui-slider__fill"></i><i class="ui-slider__thumb"></i></div>
+              </div>
+              <div class="ui-slider__seg" role="group" aria-label="Theme">
+                <span>Light</span><span class="is-on">Dark</span><span>Auto</span>
+              </div>
+            </div>
+          </div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer closing footer--statement" id="contact" aria-labelledby="close-h">
+  <div class="wrap">
+    <div class="closing__cta close--type">
+      <div class="section-head">
+        <h2 id="close-h">Get Anti-Bar for Windows</h2>
+        <p>Open-source Tauri v2 and Rust desktop shell for Windows 10 and 11 (x64).</p>
+      </div>
+      <a class="btn btn--primary btn--xl btn--wide" href="../release/Anti-Bar-portable-win64.zip" download="Anti-Bar-portable-win64.zip">Get Anti-Bar<svg class="m-arrow" viewBox="0 0 12 12" aria-hidden="true"><path class="m-arrow__stem" d="M1 6h8"/><path class="m-arrow__head" d="M4.5 2.5 8 6l-3.5 3.5"/></svg></a>
+    </div>
+    <div class="closing__links">
+      <div class="grid">
+        <div class="span-4 stack-4">
+          <a class="nav__logo" href="#top"><span class="mark" data-mark="arc" aria-hidden="true"></span>Anti-Bar</a>
+          <p class="footer__lede">Glass dock, dynamic notch, and spotlight launcher for Windows.</p>
+        </div>
+        <div class="span-2 footer__col"><h3>Product</h3><ul><li><a href="#dock">Dock</a></li><li><a href="#features">Features</a></li></ul></div>
+        <div class="span-2 footer__col"><h3>Runtime</h3><ul><li><a href="#runtime">Win32 &amp; GPU</a></li><li><a href="#faq">Compatibility</a></li></ul></div>
+        <div class="span-2 footer__col"><h3>Legal</h3><ul><li><a href="privacy.html">Privacy</a></li><li><a href="terms.html">Terms</a></li></ul></div>
+        <div class="span-2 footer__col"><h3>Build</h3><ul><li><a href="../release/anti-bar.exe">Windows .exe</a></li><li><a href="../app/">Source folder</a></li></ul></div>
+      </div>
+      <div class="footer__legal">
+        <span>&copy; 2026 Anti-Bar</span>
+        <div class="footer__legal-links"><a href="privacy.html">Privacy</a><a href="terms.html">Terms</a></div>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script type="module" src="assets/system.js"></script>
+<script type="module" src="assets/motion/motion.js"></script>
+<script type="module" src="assets/layout/layout.js"></script>
+</body>
+</html>

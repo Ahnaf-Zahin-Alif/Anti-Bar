@@ -1,0 +1,217 @@
+import { useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { Layers, LayoutGrid, Palette, Sliders, Sparkles } from "lucide-react";
+import { AppConfig } from "../types";
+import { resolveLang, STRINGS } from "../i18n";
+
+type Tab = "appearance" | "dock" | "notch" | "widgets" | "behavior";
+
+export function SettingsWindow() {
+  const [config, setConfig] = useState<AppConfig | null>(null);
+  const [tab, setTab] = useState<Tab>("appearance");
+  const saveTimer = useRef<number | null>(null);
+
+  useEffect(() => {
+    invoke<AppConfig>("get_config").then(setConfig).catch(() => {});
+  }, []);
+
+  const patch = (partial: Partial<AppConfig>) => {
+    if (!config) return;
+    const next = { ...config, ...partial };
+    setConfig(next);
+    if (saveTimer.current) window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => {
+      invoke("update_config", { newConfig: next }).catch(console.error);
+    }, 70);
+  };
+
+  if (!config) return null;
+  const lang = resolveLang(config.language);
+  const t = STRINGS[lang];
+
+  return (
+    <div className="settings-shell">
+      <aside className="settings-sidebar">
+        <div style={{ fontSize: 16, fontWeight: 700, padding: "0 12px 14px" }}>Anti-Bar</div>
+        <button className={`settings-nav-btn ${tab === "appearance" ? "active" : ""}`} onClick={() => setTab("appearance")}>
+          <Palette size={16} /> {t.tabAppearance}
+        </button>
+        <button className={`settings-nav-btn ${tab === "dock" ? "active" : ""}`} onClick={() => setTab("dock")}>
+          <Layers size={16} /> {t.tabDock}
+        </button>
+        <button className={`settings-nav-btn ${tab === "notch" ? "active" : ""}`} onClick={() => setTab("notch")}>
+          <Sparkles size={16} /> {t.tabNotch}
+        </button>
+        <button className={`settings-nav-btn ${tab === "widgets" ? "active" : ""}`} onClick={() => setTab("widgets")}>
+          <LayoutGrid size={16} /> {t.tabWidgets}
+        </button>
+        <button className={`settings-nav-btn ${tab === "behavior" ? "active" : ""}`} onClick={() => setTab("behavior")}>
+          <Sliders size={16} /> {t.tabBehavior}
+        </button>
+      </aside>
+
+      <main className="settings-main">
+        <h2 style={{ marginTop: 0 }}>{t.settingsTitle}</h2>
+
+        {tab === "appearance" && (
+          <div className="setting-group">
+            <div className="setting-row">
+              <span>{t.themeLabel}</span>
+              <select className="pill-select" value={config.theme} onChange={(e) => patch({ theme: e.target.value })}>
+                <option value="dark">Dark</option>
+                <option value="light">Light</option>
+              </select>
+            </div>
+            <div className="setting-row">
+              <span>{t.materialLabel}</span>
+              <select className="pill-select" value={config.glassMaterial} onChange={(e) => patch({ glassMaterial: e.target.value })}>
+                <option value="frosted">Frosted</option>
+                <option value="liquid">Liquid</option>
+                <option value="matte">Matte</option>
+                <option value="classic">Classic</option>
+              </select>
+            </div>
+            <div className="setting-row">
+              <span>{t.iconStyle}</span>
+              <select className="pill-select" value={config.iconStyle} onChange={(e) => patch({ iconStyle: e.target.value })}>
+                <option value="squircle">Squircle</option>
+                <option value="windows">Windows</option>
+                <option value="normalized">Normalized</option>
+              </select>
+            </div>
+            <div className="setting-row">
+              <span>{t.languageLabel}</span>
+              <select className="pill-select" value={config.language} onChange={(e) => patch({ language: e.target.value })}>
+                <option value="auto">Auto</option>
+                <option value="en">English (EN)</option>
+                <option value="id">Indonesian (ID)</option>
+              </select>
+            </div>
+          </div>
+        )}
+
+        {tab === "dock" && (
+          <div className="setting-group">
+            <div className="setting-row">
+              <span>{t.iconSize}: {config.iconSize}px</span>
+              <input type="range" min={36} max={64} value={config.iconSize} onChange={(e) => patch({ iconSize: Number(e.target.value) })} />
+            </div>
+            <div className="setting-row">
+              <span>{t.magnification}: {config.magnification.toFixed(2)}x</span>
+              <input type="range" min={1.0} max={1.65} step={0.05} value={config.magnification} onChange={(e) => patch({ magnification: Number(e.target.value) })} />
+            </div>
+            <div className="setting-row">
+              <span>{t.hideInFullscreen}</span>
+              <input type="checkbox" checked={config.hideInFullscreen} onChange={(e) => patch({ hideInFullscreen: e.target.checked })} />
+            </div>
+          </div>
+        )}
+
+        {tab === "notch" && (
+          <div className="setting-group">
+            <div className="setting-row">
+              <span>{t.notchEnabled}</span>
+              <input type="checkbox" checked={config.notchEnabled} onChange={(e) => patch({ notchEnabled: e.target.checked })} />
+            </div>
+            <div className="setting-row">
+              <span>{t.showLyrics}</span>
+              <input type="checkbox" checked={config.showLyrics} onChange={(e) => patch({ showLyrics: e.target.checked })} />
+            </div>
+          </div>
+        )}
+
+        {tab === "widgets" && (
+          <div className="setting-group">
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+              <div style={{ padding: 12, borderRadius: 10, background: "rgba(255,255,255,0.04)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div style={{ fontWeight: 600 }}>Desktop Clock</div>
+                  <div style={{ fontSize: 12, color: "#94a3b8" }}>Direct2D · {config.clockStyle}</div>
+                </div>
+                <input type="checkbox" checked={config.clockEnabled} onChange={(e) => patch({ clockEnabled: e.target.checked })} />
+              </div>
+              <div style={{ padding: 12, borderRadius: 10, background: "rgba(255,255,255,0.04)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div style={{ fontWeight: 600 }}>Vinyl Player</div>
+                  <div style={{ fontSize: 12, color: "#94a3b8" }}>332px · {config.vinylStyle}</div>
+                </div>
+                <input type="checkbox" checked={config.vinylEnabled} onChange={(e) => patch({ vinylEnabled: e.target.checked })} />
+              </div>
+              <div style={{ padding: 12, borderRadius: 10, background: "rgba(255,255,255,0.04)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div style={{ fontWeight: 600 }}>Calendar &amp; Agenda</div>
+                  <div style={{ fontSize: 12, color: "#94a3b8" }}>{config.calendarLayout} · .ics sync</div>
+                </div>
+                <input type="checkbox" checked={config.calendarEnabled} onChange={(e) => patch({ calendarEnabled: e.target.checked })} />
+              </div>
+              <div style={{ padding: 12, borderRadius: 10, background: "rgba(255,255,255,0.04)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div style={{ fontWeight: 600 }}>Sticky Memo</div>
+                  <div style={{ fontSize: 12, color: "#94a3b8" }}>{config.memoStyle} · To-Do</div>
+                </div>
+                <input type="checkbox" checked={config.memoEnabled} onChange={(e) => patch({ memoEnabled: e.target.checked })} />
+              </div>
+            </div>
+
+            <div className="setting-row">
+              <span>Clock Style</span>
+              <select className="pill-select" value={config.clockStyle} onChange={(e) => patch({ clockStyle: e.target.value })}>
+                <option value="liquid">Liquid Glass</option>
+                <option value="glass">Glass Card</option>
+                <option value="sonoma">Sonoma</option>
+              </select>
+            </div>
+            <div className="setting-row">
+              <span>Clock Alignment</span>
+              <select className="pill-select" value={config.clockAlign} onChange={(e) => patch({ clockAlign: e.target.value })}>
+                <option value="left">Left</option>
+                <option value="center">Center</option>
+                <option value="right">Right</option>
+              </select>
+            </div>
+            <div className="setting-row">
+              <span>Clock Size: {config.clockSize}px</span>
+              <input type="range" min={56} max={180} value={config.clockSize} onChange={(e) => patch({ clockSize: Number(e.target.value) })} />
+            </div>
+            <div className="setting-row">
+              <span>iCal (.ics) Feed URL</span>
+              <input
+                type="text"
+                className="pill-select"
+                style={{ width: 240 }}
+                placeholder="https://calendar.google.com/..."
+                value={config.calendarIcsUrl}
+                onChange={(e) => patch({ calendarIcsUrl: e.target.value })}
+              />
+            </div>
+          </div>
+        )}
+
+        {tab === "behavior" && (
+          <div className="setting-group">
+            <div className="setting-row">
+              <span>{t.genieEffect}</span>
+              <input type="checkbox" checked={config.genieEffect} onChange={(e) => patch({ genieEffect: e.target.checked })} />
+            </div>
+            <div className="setting-row">
+              <span>Use Windows Key for Spotlight (Ctrl+Esc fallback)</span>
+              <input
+                type="checkbox"
+                checked={config.useWinKeyForLaunchpad}
+                onChange={(e) => patch({ useWinKeyForLaunchpad: e.target.checked })}
+              />
+            </div>
+            <div className="setting-row">
+              <span>Hide Windows Taskbar (Opt-in)</span>
+              <input
+                type="checkbox"
+                checked={config.hideWindowsTaskbar}
+                onChange={(e) => patch({ hideWindowsTaskbar: e.target.checked })}
+              />
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}

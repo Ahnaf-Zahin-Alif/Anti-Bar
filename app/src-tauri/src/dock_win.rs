@@ -1,0 +1,544 @@
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs;
+use std::mem::size_of;
+use std::path::Path;
+use std::sync::{Mutex, OnceLock};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunningWindow {
+    pub hwnd: isize,
+    pub title: String,
+    pub exe_path: String,
+    pub exe_name: String,
+    pub is_focused: bool,
+    pub is_minimized: bool,
+    pub icon_data_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadEntry {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub size_bytes: u64,
+    pub modified_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrashInfo {
+    pub items: i64,
+    pub size_bytes: i64,
+}
+
+static ICON_CACHE: OnceLock<Mutex<HashMap<String, Option<String>>>> = OnceLock::new();
+
+fn icon_cache() -> &'static Mutex<HashMap<String, Option<String>>> {
+    ICON_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(windows)]
+fn hicon_to_png_data_url(hicon: windows::Win32::UI::WindowsAndMessaging::HICON) -> Option<String> {
+    use windows::Win32::Graphics::Gdi::{
+        CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, GetObjectW, SelectObject, BITMAP,
+        BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{GetIconInfo, ICONINFO};
+
+    if hicon.0.is_null() {
+        return None;
+    }
+
+    unsafe {
+        let mut info = ICONINFO::default();
+        if GetIconInfo(hicon, &mut info).is_err() {
+            return None;
+        }
+        let bmp_handle = if !info.hbmColor.is_invalid() {
+            info.hbmColor
+        } else {
+            info.hbmMask
+        };
+        let mut bm = BITMAP::default();
+        if GetObjectW(
+            bmp_handle,
+            size_of::<BITMAP>() as i32,
+            Some(&mut bm as *mut BITMAP as *mut _),
+        ) == 0
+        {
+            if !info.hbmColor.is_invalid() {
+                let _ = DeleteObject(info.hbmColor);
+            }
+            if !info.hbmMask.is_invalid() {
+                let _ = DeleteObject(info.hbmMask);
+            }
+            return None;
+        }
+
+        let w = bm.bmWidth.max(1);
+        let h = bm.bmHeight.abs().max(1);
+        let hdc = CreateCompatibleDC(None);
+        let old = SelectObject(hdc, bmp_handle);
+
+        let mut bi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: w,
+                biHeight: -h, // top-down
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let mut bgra = vec![0u8; (w * h * 4) as usize];
+        let rows = GetDIBits(
+            hdc,
+            bmp_handle,
+            0,
+            h as u32,
+            Some(bgra.as_mut_ptr() as *mut _),
+            &mut bi,
+            DIB_RGB_COLORS,
+        );
+
+        SelectObject(hdc, old);
+        let _ = DeleteDC(hdc);
+        if !info.hbmColor.is_invalid() {
+            let _ = DeleteObject(info.hbmColor);
+        }
+        if !info.hbmMask.is_invalid() {
+            let _ = DeleteObject(info.hbmMask);
+        }
+        if rows == 0 {
+            return None;
+        }
+
+        // Convert BGRA -> RGBA and check if any alpha is non-zero
+        let mut any_alpha = false;
+        for px in bgra.chunks_exact_mut(4) {
+            px.swap(0, 2);
+            if px[3] != 0 {
+                any_alpha = true;
+            }
+        }
+        if !any_alpha {
+            for px in bgra.chunks_exact_mut(4) {
+                if px[0] != 0 || px[1] != 0 || px[2] != 0 {
+                    px[3] = 255;
+                }
+            }
+        }
+
+        let mut out = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut out, w as u32, h as u32);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().ok()?;
+            writer.write_image_data(&bgra).ok()?;
+        }
+        Some(format!("data:image/png;base64,{}", STANDARD.encode(&out)))
+    }
+}
+
+#[cfg(windows)]
+pub fn extract_path_icon_data_url(path: &str) -> Option<String> {
+    use windows::core::HSTRING;
+    use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
+    use windows::Win32::UI::Shell::{
+        SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON, SHGFI_USEFILEATTRIBUTES,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::DestroyIcon;
+
+    let key = path.to_ascii_lowercase();
+    if let Ok(guard) = icon_cache().lock() {
+        if let Some(cached) = guard.get(&key) {
+            return cached.clone();
+        }
+    }
+
+    let resolved = resolve_exe_hint(path).unwrap_or_else(|| path.to_string());
+    let hpath = HSTRING::from(&resolved);
+
+    let result = unsafe {
+        let mut sfi = SHFILEINFOW::default();
+        let ok = SHGetFileInfoW(
+            &hpath,
+            FILE_FLAGS_AND_ATTRIBUTES(0),
+            Some(&mut sfi),
+            size_of::<SHFILEINFOW>() as u32,
+            SHGFI_ICON | SHGFI_LARGEICON,
+        );
+        if ok == 0 || sfi.hIcon.0.is_null() {
+            let _ = SHGetFileInfoW(
+                &hpath,
+                FILE_FLAGS_AND_ATTRIBUTES(0x80),
+                Some(&mut sfi),
+                size_of::<SHFILEINFOW>() as u32,
+                SHGFI_ICON | SHGFI_LARGEICON | SHGFI_USEFILEATTRIBUTES,
+            );
+        }
+        if sfi.hIcon.0.is_null() {
+            None
+        } else {
+            let data = hicon_to_png_data_url(sfi.hIcon);
+            let _ = DestroyIcon(sfi.hIcon);
+            data
+        }
+    };
+
+    if let Ok(mut guard) = icon_cache().lock() {
+        guard.insert(key, result.clone());
+    }
+    result
+}
+
+#[cfg(not(windows))]
+pub fn extract_path_icon_data_url(_path: &str) -> Option<String> {
+    None
+}
+
+fn resolve_exe_hint(path: &str) -> Option<String> {
+    if Path::new(path).exists() {
+        return Some(path.to_string());
+    }
+    if path.eq_ignore_ascii_case("explorer.exe") {
+        return Some(r"C:\Windows\explorer.exe".into());
+    }
+    if path.eq_ignore_ascii_case("notepad.exe") {
+        return Some(r"C:\Windows\System32\notepad.exe".into());
+    }
+    if path.eq_ignore_ascii_case("calc.exe") {
+        return Some(r"C:\Windows\System32\calc.exe".into());
+    }
+    if path.eq_ignore_ascii_case("cmd.exe") {
+        return Some(r"C:\Windows\System32\cmd.exe".into());
+    }
+    if path.eq_ignore_ascii_case("taskmgr.exe") {
+        return Some(r"C:\Windows\System32\Taskmgr.exe".into());
+    }
+    if path.eq_ignore_ascii_case("control.exe") {
+        return Some(r"C:\Windows\System32\control.exe".into());
+    }
+    if path.eq_ignore_ascii_case("mspaint.exe") {
+        return Some(r"C:\Windows\System32\mspaint.exe".into());
+    }
+    if path.eq_ignore_ascii_case("msedge.exe") {
+        let p = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe";
+        if Path::new(p).exists() {
+            return Some(p.into());
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+pub fn enumerate_running_windows() -> Vec<RunningWindow> {
+    use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowLongW, GetWindowTextLengthW,
+        GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, GWL_EXSTYLE,
+        WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+    };
+
+    unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let list = &mut *(lparam.0 as *mut Vec<(isize, String, String, bool, bool)>);
+        if !IsWindowVisible(hwnd).as_bool() {
+            return BOOL(1);
+        }
+        let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+        if (ex_style & WS_EX_TOOLWINDOW.0) != 0 && (ex_style & WS_EX_APPWINDOW.0) == 0 {
+            return BOOL(1);
+        }
+        let mut cloaked: u32 = 0;
+        if DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED,
+            &mut cloaked as *mut u32 as *mut _,
+            size_of::<u32>() as u32,
+        )
+        .is_ok()
+            && cloaked != 0
+        {
+            return BOOL(1);
+        }
+
+        let len = GetWindowTextLengthW(hwnd);
+        if len <= 0 {
+            return BOOL(1);
+        }
+        let mut title_buf = vec![0u16; (len + 1) as usize];
+        let copied = GetWindowTextW(hwnd, &mut title_buf);
+        if copied <= 0 {
+            return BOOL(1);
+        }
+        let title = String::from_utf16_lossy(&title_buf[..copied as usize]);
+
+        let mut class_buf = [0u16; 128];
+        let clen = GetClassNameW(hwnd, &mut class_buf);
+        let class_name = String::from_utf16_lossy(&class_buf[..clen as usize]);
+        if matches!(
+            class_name.as_str(),
+            "Progman" | "WorkerW" | "Shell_TrayWnd" | "Windows.UI.Core.CoreWindow"
+        ) {
+            return BOOL(1);
+        }
+        if title.starts_with("Anti-Bar") {
+            return BOOL(1);
+        }
+
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == std::process::id() {
+            return BOOL(1);
+        }
+
+        let mut exe_path = String::new();
+        if let Ok(proc_h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+            let mut path_buf = [0u16; 512];
+            let mut plen = path_buf.len() as u32;
+            if QueryFullProcessImageNameW(
+                proc_h,
+                PROCESS_NAME_WIN32,
+                windows::core::PWSTR(path_buf.as_mut_ptr()),
+                &mut plen,
+            )
+            .is_ok()
+            {
+                exe_path = String::from_utf16_lossy(&path_buf[..plen as usize]);
+            }
+            let _ = windows::Win32::Foundation::CloseHandle(proc_h);
+        }
+        if exe_path.is_empty() {
+            return BOOL(1);
+        }
+
+        let fg = GetForegroundWindow();
+        let is_focused = fg.0 == hwnd.0;
+        let is_minimized = IsIconic(hwnd).as_bool();
+        list.push((hwnd.0 as isize, title, exe_path, is_focused, is_minimized));
+        BOOL(1)
+    }
+
+    let mut raw: Vec<(isize, String, String, bool, bool)> = Vec::new();
+    unsafe {
+        let _ = EnumWindows(Some(enum_proc), LPARAM(&mut raw as *mut _ as isize));
+    }
+
+    raw.into_iter()
+        .map(|(hwnd, title, exe_path, is_focused, is_minimized)| {
+            let exe_name = Path::new(&exe_path)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(&title)
+                .to_string();
+            let icon_data_url = extract_path_icon_data_url(&exe_path);
+            RunningWindow {
+                hwnd,
+                title,
+                exe_path,
+                exe_name,
+                is_focused,
+                is_minimized,
+                icon_data_url,
+            }
+        })
+        .collect()
+}
+
+#[cfg(not(windows))]
+pub fn enumerate_running_windows() -> Vec<RunningWindow> {
+    Vec::new()
+}
+
+#[cfg(windows)]
+pub fn toggle_window_hwnd(hwnd_val: isize) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, IsIconic, SetForegroundWindow, ShowWindow, SW_MINIMIZE, SW_RESTORE,
+        SW_SHOW,
+    };
+
+    let hwnd = HWND(hwnd_val as *mut _);
+    unsafe {
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+            let _ = SetForegroundWindow(hwnd);
+        } else if GetForegroundWindow().0 == hwnd.0 {
+            let _ = ShowWindow(hwnd, SW_MINIMIZE);
+        } else {
+            let _ = ShowWindow(hwnd, SW_SHOW);
+            let _ = SetForegroundWindow(hwnd);
+        }
+    }
+}
+
+#[cfg(windows)]
+pub fn launch_path(path: &str, args: Option<&str>) -> Result<(), String> {
+    use windows::core::{HSTRING, PCWSTR};
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let verb = HSTRING::from("open");
+    let target = HSTRING::from(path);
+    let params = args.map(HSTRING::from);
+    let res = unsafe {
+        ShellExecuteW(
+            None,
+            &verb,
+            &target,
+            params.as_ref().map(|p| PCWSTR(p.as_ptr())).unwrap_or(PCWSTR::null()),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    if (res.0 as isize) <= 32 {
+        Err(format!("ShellExecuteW failed with code {}", res.0 as isize))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+pub fn is_fullscreen_active() -> bool {
+    use windows::Win32::UI::Shell::{
+        SHQueryUserNotificationState, QUNS_BUSY, QUNS_RUNNING_D3D_FULL_SCREEN,
+    };
+    unsafe {
+        if let Ok(state) = SHQueryUserNotificationState() {
+            return state == QUNS_RUNNING_D3D_FULL_SCREEN || state == QUNS_BUSY;
+        }
+    }
+    false
+}
+
+#[cfg(not(windows))]
+pub fn is_fullscreen_active() -> bool {
+    false
+}
+
+pub fn list_downloads() -> Vec<DownloadEntry> {
+    let Some(dir) = dirs::download_dir() else {
+        return Vec::new();
+    };
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut list: Vec<DownloadEntry> = entries
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            let name = p.file_name()?.to_string_lossy().to_string();
+            if name.starts_with('.') || name.eq_ignore_ascii_case("desktop.ini") {
+                return None;
+            }
+            let meta = e.metadata().ok()?;
+            let modified_ms = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            Some(DownloadEntry {
+                name,
+                path: p.to_string_lossy().to_string(),
+                is_dir: meta.is_dir(),
+                size_bytes: if meta.is_dir() { 0 } else { meta.len() },
+                modified_ms,
+            })
+        })
+        .collect();
+    list.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms));
+    list.truncate(24);
+    list
+}
+
+#[cfg(windows)]
+pub fn query_recycle_bin() -> TrashInfo {
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::Shell::{SHQueryRecycleBinW, SHQUERYRBINFO};
+    unsafe {
+        let mut info = SHQUERYRBINFO {
+            cbSize: size_of::<SHQUERYRBINFO>() as u32,
+            ..Default::default()
+        };
+        if SHQueryRecycleBinW(PCWSTR::null(), &mut info).is_ok() {
+            TrashInfo {
+                items: info.i64NumItems,
+                size_bytes: info.i64Size,
+            }
+        } else {
+            TrashInfo {
+                items: 0,
+                size_bytes: 0,
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+pub fn empty_recycle_bin() -> Result<(), String> {
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::Shell::{
+        SHEmptyRecycleBinW, SHERB_NOCONFIRMATION, SHERB_NOPROGRESSUI, SHERB_NOSOUND,
+    };
+    unsafe {
+        SHEmptyRecycleBinW(
+            None,
+            PCWSTR::null(),
+            SHERB_NOCONFIRMATION | SHERB_NOPROGRESSUI | SHERB_NOSOUND,
+        )
+        .map_err(|e| e.to_string())
+    }
+}
+
+static TASKBAR_HIDDEN_BY_US: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(windows)]
+pub fn set_windows_taskbar_hidden(hidden: bool) {
+    use std::sync::atomic::Ordering;
+    use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetClassNameW, ShowWindow, SW_HIDE, SW_SHOWNA,
+    };
+
+    unsafe extern "system" fn taskbar_enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let mut class_buf = [0u16; 64];
+        let len = GetClassNameW(hwnd, &mut class_buf);
+        if len > 0 {
+            let class_name = String::from_utf16_lossy(&class_buf[..len as usize]);
+            if class_name == "Shell_TrayWnd" || class_name == "Shell_SecondaryTrayWnd" {
+                let hide = lparam.0 != 0;
+                let _ = ShowWindow(hwnd, if hide { SW_HIDE } else { SW_SHOWNA });
+            }
+        }
+        BOOL(1)
+    }
+
+    TASKBAR_HIDDEN_BY_US.store(hidden, Ordering::SeqCst);
+    unsafe {
+        let _ = EnumWindows(Some(taskbar_enum_proc), LPARAM(if hidden { 1 } else { 0 }));
+    }
+}
+
+#[cfg(not(windows))]
+pub fn set_windows_taskbar_hidden(_hidden: bool) {}
+
+pub fn restore_taskbar_if_hidden() {
+    if TASKBAR_HIDDEN_BY_US.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        set_windows_taskbar_hidden(false);
+    }
+}

@@ -1,0 +1,14 @@
+# Dependencies & build caches
+app/node_modules/
+app/dist/
+app/dist-bin/
+app/src-tauri/target/
+
+# Verification screenshots & logs
+site/shots/
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini

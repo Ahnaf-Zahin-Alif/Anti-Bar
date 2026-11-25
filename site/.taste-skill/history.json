@@ -1,0 +1,20 @@
+{
+  "moments": [
+    {
+      "id": "liquid-type",
+      "at": "2026-11-25T13:31:45.176Z",
+      "seed": "1bf7cd46"
+    }
+  ],
+  "palettes": [
+    "card-pastels"
+  ],
+  "types": [
+    "mona"
+  ],
+  "dealt": [
+    "mona",
+    "geist",
+    "familjen"
+  ]
+}
