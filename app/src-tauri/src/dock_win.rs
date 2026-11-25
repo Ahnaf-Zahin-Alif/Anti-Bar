@@ -985,3 +985,45 @@ pub fn trim_process_tree_memory() {
 
 #[cfg(not(windows))]
 pub fn trim_process_tree_memory() {}
+
+#[cfg(windows)]
+pub fn cursor_position() -> Option<(f64, f64)> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    unsafe {
+        let mut pt = POINT::default();
+        if GetCursorPos(&mut pt).is_ok() {
+            Some((pt.x as f64, pt.y as f64))
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn cursor_position() -> Option<(f64, f64)> {
+    None
+}
+
+#[cfg(windows)]
+pub fn set_window_click_through(hwnd_raw: isize, click_through: bool) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_TRANSPARENT,
+    };
+    let hwnd = HWND(hwnd_raw as *mut _);
+    if hwnd.0.is_null() {
+        return;
+    }
+    unsafe {
+        let cur = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let flag = WS_EX_TRANSPARENT.0 as isize;
+        let next = if click_through { cur | flag } else { cur & !flag };
+        if next != cur {
+            let _ = SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn set_window_click_through(_hwnd_raw: isize, _click_through: bool) {}

@@ -30,6 +30,8 @@ export interface AppConfig {
   autoHideDock: boolean;
   hideInFullscreen: boolean;
   hideWindowsTaskbar: boolean;
+  monitorMode: "primary" | "cursor" | "custom" | string;
+  monitorName: string;
   showDockClock: boolean;
   genieEffect: boolean;
   useWinKeyForLaunchpad: boolean;
@@ -166,4 +168,32 @@ export interface SystemStatus {
 export interface IcsEvent {
   summary: string;
   dtstart: string;
+}
+
+export interface MonitorInfo {
+  name: string;
+  width: number;
+  height: number;
+  isPrimary: boolean;
+}
+
+export interface BluetoothStatus {
+  available: boolean;
+  enabled: boolean;
+}
+
+export interface TrayIconInfo {
+  id: string;
+  title: string;
+  rectLeft: number;
+  rectTop: number;
+  rectRight: number;
+  rectBottom: number;
+}
+
+export interface HitboxRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }

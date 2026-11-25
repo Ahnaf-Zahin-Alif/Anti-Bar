@@ -45,6 +45,10 @@ pub struct AppConfig {
     pub hide_in_fullscreen: bool,
     pub hide_windows_taskbar: bool,   // default true (restored on exit)
     #[serde(default)]
+    pub monitor_mode: String,         // "primary" | "cursor" | "custom"
+    #[serde(default)]
+    pub monitor_name: String,
+    #[serde(default)]
     pub show_dock_clock: bool,        // optional clock + notifications pill in Dock
     pub genie_effect: bool,
     pub use_win_key_for_launchpad: bool, // opt-in, default false
@@ -84,6 +88,8 @@ impl Default for AppConfig {
             auto_hide_dock: false,
             hide_in_fullscreen: true,
             hide_windows_taskbar: true,
+            monitor_mode: "primary".into(),
+            monitor_name: String::new(),
             show_dock_clock: false,
             genie_effect: true,
             use_win_key_for_launchpad: false,
@@ -186,6 +192,9 @@ pub fn sanitize_config(cfg: &mut AppConfig) {
     cfg.clock_top_offset = cfg.clock_top_offset.clamp(24, 320);
     if !matches!(cfg.clock_align.as_str(), "left" | "center" | "right") {
         cfg.clock_align = "center".into();
+    }
+    if !matches!(cfg.monitor_mode.as_str(), "primary" | "cursor" | "custom") {
+        cfg.monitor_mode = "primary".into();
     }
     cfg.language = "en".into();
 }

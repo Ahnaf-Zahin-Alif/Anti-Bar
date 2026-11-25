@@ -372,4 +372,32 @@ mod tests {
         assert!((y_tf - 970.0).abs() < 1e-6);
         assert!((y_tt - 970.0).abs() < 1e-6);
     }
+
+    #[test]
+    fn hitbox_and_drag_helpers() {
+        let rects = vec![
+            anti_bar_lib::HitboxRect {
+                x: 100.0,
+                y: 300.0,
+                width: 400.0,
+                height: 80.0,
+            },
+        ];
+        assert!(anti_bar_lib::point_in_hitboxes(250.0, 340.0, &rects));
+        assert!(!anti_bar_lib::point_in_hitboxes(50.0, 340.0, &rects));
+        assert!(!anti_bar_lib::point_in_hitboxes(f64::NAN, 340.0, &rects));
+
+        let args = anti_bar_lib::drag_drop::format_open_files_args(&[
+            "C:\\Docs\\a b.txt".into(),
+            "".into(),
+        ]);
+        assert_eq!(args, "\"C:\\Docs\\a b.txt\"");
+
+        let mut cfg = config::AppConfig {
+            monitor_mode: "invalid".into(),
+            ..Default::default()
+        };
+        config::sanitize_config(&mut cfg);
+        assert_eq!(cfg.monitor_mode, "primary");
+    }
 }

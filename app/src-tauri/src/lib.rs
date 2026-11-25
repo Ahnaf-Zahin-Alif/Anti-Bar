@@ -2,13 +2,15 @@ pub mod audio_mixer;
 pub mod clipboard;
 pub mod config;
 pub mod dock_win;
+pub mod drag_drop;
 pub mod native_ui;
 pub mod spotlight;
 pub mod system_panels;
 pub mod win_hook;
 
 use config::{load_config, save_config, AppConfig};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tauri::{
     menu::{Menu, MenuItem},
@@ -16,10 +18,43 @@ use tauri::{
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder,
 };
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HitboxRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonitorInfo {
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub is_primary: bool,
+}
+
+pub fn point_in_hitboxes(px: f64, py: f64, rects: &[HitboxRect]) -> bool {
+    if !px.is_finite() || !py.is_finite() {
+        return false;
+    }
+    rects.iter().any(|r| {
+        r.width > 0.0
+            && r.height > 0.0
+            && px >= r.x
+            && px <= r.x + r.width
+            && py >= r.y
+            && py <= r.y + r.height
+    })
+}
+
 pub struct AppState {
     pub config: Mutex<AppConfig>,
     pub clipboard_history: Mutex<Vec<clipboard::ClipboardItem>>,
     pub spotlight_cache: Mutex<Vec<spotlight::SpotlightEntry>>,
+    pub hitboxes: Mutex<HashMap<String, (Vec<HitboxRect>, bool)>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -51,6 +86,9 @@ async fn update_config(app: AppHandle, state: State<'_, AppState>, mut new_confi
         .map_err(|e| e.to_string())??;
     let _ = app.emit("antibar://config-changed", &new_config);
     sync_notch_window(&app, new_config.notch_enabled);
+    if let Some(notch) = app.get_webview_window("notch") {
+        position_top_center(&app, &notch, 470.0);
+    }
     win_hook::set_win_key_hook_enabled(&app, new_config.use_win_key_for_launchpad);
     dock_win::set_windows_taskbar_hidden(new_config.hide_windows_taskbar);
     apply_dock_geometry(&app, None, None, new_config.hide_windows_taskbar);
@@ -144,6 +182,103 @@ async fn run_power_action(action: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || system_panels::execute_power_action(&action))
         .await
         .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn get_bluetooth_status() -> system_panels::BluetoothStatus {
+    tauri::async_runtime::spawn_blocking(system_panels::get_bluetooth_status)
+        .await
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+async fn set_bluetooth_enabled(enabled: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || system_panels::set_bluetooth_enabled(enabled))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn connect_wifi(ssid: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || system_panels::connect_wifi(&ssid))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn disconnect_wifi() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(system_panels::disconnect_wifi)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn get_brightness() -> Option<u32> {
+    tauri::async_runtime::spawn_blocking(system_panels::get_brightness)
+        .await
+        .ok()
+        .flatten()
+}
+
+#[tauri::command]
+async fn set_brightness(percent: u32) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || system_panels::set_brightness(percent))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn start_shelf_file_drag(paths: Vec<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || drag_drop::start_file_drag(paths))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn open_files_with_app(app_path: String, file_paths: Vec<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || drag_drop::open_files_with_app(&app_path, &file_paths))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn update_overlay_hitboxes(
+    state: State<AppState>,
+    label: String,
+    rects: Vec<HitboxRect>,
+    force_interactive: Option<bool>,
+) {
+    let mut guard = lock_recover(&state.hitboxes);
+    guard.insert(label, (rects, force_interactive.unwrap_or(false)));
+}
+
+#[tauri::command]
+fn get_monitors(app: AppHandle) -> Vec<MonitorInfo> {
+    let primary_name = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .and_then(|m| m.name().cloned())
+        .unwrap_or_default();
+    let Ok(list) = app.available_monitors() else {
+        return Vec::new();
+    };
+    list.into_iter()
+        .enumerate()
+        .map(|(idx, m)| {
+            let name = m
+                .name()
+                .cloned()
+                .unwrap_or_else(|| format!("Display {}", idx + 1));
+            let sz = m.size();
+            MonitorInfo {
+                is_primary: !primary_name.is_empty() && name == primary_name,
+                name,
+                width: sz.width,
+                height: sz.height,
+            }
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -467,7 +602,7 @@ fn resize_overlay(app: AppHandle, state: State<AppState>, label: String, width: 
                 let cw = width.max(120.0);
                 let ch = height.max(32.0);
                 let _ = win.set_size(tauri::LogicalSize::new(cw, ch));
-                position_top_center(&win, cw);
+                position_top_center(&app_for_main, &win, cw);
             } else {
                 let _ = win.set_size(tauri::LogicalSize::new(width.max(120.0), height.max(40.0)));
             }
@@ -490,6 +625,34 @@ pub fn compute_dock_bounds(
     compute_bottom_center_rect(left, top, area_w, area_h, width, height)
 }
 
+fn resolve_target_monitor(app: &AppHandle, cfg: &AppConfig) -> Option<tauri::Monitor> {
+    if cfg.monitor_mode == "cursor" {
+        if let (Some((cx, cy)), Ok(list)) = (dock_win::cursor_position(), app.available_monitors()) {
+            for m in list {
+                let p = m.position();
+                let s = m.size();
+                if cx >= p.x as f64
+                    && cx < (p.x + s.width as i32) as f64
+                    && cy >= p.y as f64
+                    && cy < (p.y + s.height as i32) as f64
+                {
+                    return Some(m);
+                }
+            }
+        }
+    } else if cfg.monitor_mode == "custom" && !cfg.monitor_name.is_empty() {
+        if let Ok(list) = app.available_monitors() {
+            if let Some(found) = list
+                .into_iter()
+                .find(|m| m.name().is_some_and(|n| n == &cfg.monitor_name))
+            {
+                return Some(found);
+            }
+        }
+    }
+    app.primary_monitor().ok().flatten()
+}
+
 fn apply_dock_geometry(
     app: &AppHandle,
     target_w: Option<f64>,
@@ -497,16 +660,17 @@ fn apply_dock_geometry(
     taskbar_hidden: bool,
 ) {
     let app_for_main = app.clone();
+    let cfg = lock_recover(&app.state::<AppState>().config).clone();
     let _ = app.run_on_main_thread(move || {
         if let Some(dock) = app_for_main.get_webview_window("dock") {
             let (w, h) = match (target_w, target_h) {
                 (Some(w), Some(h)) => (w, h),
                 _ => match (dock.inner_size(), dock.scale_factor()) {
                     (Ok(sz), Ok(scale)) if scale > 0.0 => (sz.width as f64 / scale, sz.height as f64 / scale),
-                    _ => (860.0, 108.0),
+                    _ => (1040.0, 416.0),
                 },
             };
-            if let Ok(Some(mon)) = dock.primary_monitor() {
+            if let Some(mon) = resolve_target_monitor(&app_for_main, &cfg) {
                 let scale = mon.scale_factor();
                 let p = mon.position();
                 let s = mon.size();
@@ -538,7 +702,7 @@ fn sync_notch_window(app: &AppHandle, enabled: bool) {
         if app.get_webview_window("notch").is_none() {
             if let Ok(win) = WebviewWindowBuilder::new(app, "notch", WebviewUrl::App("index.html?view=notch".into()))
                 .title("Anti-Bar Notch")
-                .inner_size(256.0, 46.0)
+                .inner_size(470.0, 344.0)
                 .decorations(false)
                 .transparent(true)
                 .always_on_top(true)
@@ -549,7 +713,7 @@ fn sync_notch_window(app: &AppHandle, enabled: bool) {
                 .additional_browser_args(BROWSER_ARGS)
                 .build()
             {
-                position_top_center(&win, 256.0);
+                position_top_center(app, &win, 470.0);
                 apply_webview_memory_policy(&win, false);
             }
         }
@@ -584,8 +748,9 @@ pub fn compute_bottom_center_rect(
     (x, y, cw, ch)
 }
 
-fn position_top_center(win: &tauri::WebviewWindow, width: f64) {
-    if let Ok(Some(mon)) = win.primary_monitor() {
+fn position_top_center(app: &AppHandle, win: &tauri::WebviewWindow, width: f64) {
+    let cfg = lock_recover(&app.state::<AppState>().config).clone();
+    if let Some(mon) = resolve_target_monitor(app, &cfg) {
         let scale = mon.scale_factor();
         let pos = mon.position();
         let mon_left = pos.x as f64 / scale;
@@ -721,6 +886,86 @@ fn start_background_pollers(app: AppHandle) {
     });
 }
 
+fn start_overlay_poller(app: AppHandle) {
+    std::thread::spawn(move || {
+        let mut last_dock_ct: Option<bool> = None;
+        let mut last_notch_ct: Option<bool> = None;
+        let mut last_autohide: Option<bool> = None;
+        let mut last_cursor_mon = String::new();
+
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(35));
+            let Some((cx, cy)) = dock_win::cursor_position() else {
+                continue;
+            };
+
+            let state = app.state::<AppState>();
+            let cfg = lock_recover(&state.config).clone();
+            let hitboxes = lock_recover(&state.hitboxes).clone();
+
+            for (label, last_ct) in [("dock", &mut last_dock_ct), ("notch", &mut last_notch_ct)] {
+                if let Some(win) = app.get_webview_window(label) {
+                    if let (Ok(hwnd), Ok(pos), Ok(scale)) = (win.hwnd(), win.outer_position(), win.scale_factor()) {
+                        let lx = (cx - pos.x as f64) / scale.max(0.5);
+                        let ly = (cy - pos.y as f64) / scale.max(0.5);
+                        let (rects, force) = hitboxes
+                            .get(label)
+                            .map(|(r, f)| (r.as_slice(), *f))
+                            .unwrap_or((&[], false));
+                        let interactive = force || point_in_hitboxes(lx, ly, rects);
+                        let click_through = !interactive;
+                        if *last_ct != Some(click_through) {
+                            *last_ct = Some(click_through);
+                            dock_win::set_window_click_through(hwnd.0 as isize, click_through);
+                        }
+                    }
+                }
+            }
+
+            if cfg.monitor_mode == "cursor" {
+                if let Some(mon) = resolve_target_monitor(&app, &cfg) {
+                    let mname = mon.name().cloned().unwrap_or_default();
+                    if mname != last_cursor_mon {
+                        last_cursor_mon = mname;
+                        apply_dock_geometry(&app, None, None, cfg.hide_windows_taskbar);
+                        if let Some(notch) = app.get_webview_window("notch") {
+                            position_top_center(&app, &notch, 470.0);
+                        }
+                    }
+                }
+            }
+
+            if cfg.auto_hide_dock {
+                if let Some(mon) = resolve_target_monitor(&app, &cfg) {
+                    let p = mon.position();
+                    let s = mon.size();
+                    let bottom = (p.y + s.height as i32) as f64;
+                    let left = p.x as f64;
+                    let right = (p.x + s.width as i32) as f64;
+                    let in_x = cx >= left && cx <= right;
+                    let dock_force = hitboxes.get("dock").is_some_and(|(_, f)| *f);
+                    let next_hidden = if dock_force {
+                        false
+                    } else if in_x && cy >= bottom - 6.0 {
+                        false
+                    } else if cy < bottom - 135.0 {
+                        true
+                    } else {
+                        last_autohide.unwrap_or(false)
+                    };
+                    if last_autohide != Some(next_hidden) {
+                        last_autohide = Some(next_hidden);
+                        let _ = app.emit("antibar://dock-autohide", next_hidden);
+                    }
+                }
+            } else if last_autohide != Some(false) {
+                last_autohide = Some(false);
+                let _ = app.emit("antibar://dock-autohide", false);
+            }
+        }
+    });
+}
+
 struct TaskbarRestoreGuard;
 
 impl Drop for TaskbarRestoreGuard {
@@ -765,6 +1010,7 @@ pub fn run() {
         config: Mutex::new(initial_cfg),
         clipboard_history: Mutex::new(initial_clips),
         spotlight_cache: Mutex::new(Vec::new()),
+        hitboxes: Mutex::new(HashMap::new()),
     };
 
     let _arc_guard = Arc::new(());
@@ -783,6 +1029,12 @@ pub fn run() {
             dismiss_notification,
             clear_notifications,
             get_wifi_networks,
+            connect_wifi,
+            disconnect_wifi,
+            get_bluetooth_status,
+            set_bluetooth_enabled,
+            get_brightness,
+            set_brightness,
             get_system_status,
             run_power_action,
             get_running_windows,
@@ -808,6 +1060,10 @@ pub fn run() {
             toggle_spotlight,
             hide_spotlight,
             resize_overlay,
+            update_overlay_hitboxes,
+            get_monitors,
+            start_shelf_file_drag,
+            open_files_with_app,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -816,7 +1072,7 @@ pub fn run() {
             if let Some(dock) = app.get_webview_window("dock") {
                 apply_webview_memory_policy(&dock, false);
             }
-            apply_dock_geometry(&handle, Some(860.0), Some(108.0), hide_taskbar_on_start);
+            apply_dock_geometry(&handle, Some(1040.0), Some(416.0), hide_taskbar_on_start);
             sync_notch_window(&handle, show_notch);
             win_hook::set_win_key_hook_enabled(&handle, enable_win_hook);
             native_ui::sync_native_widgets(&cfg_for_widgets);
@@ -890,6 +1146,7 @@ pub fn run() {
 
             #[cfg(windows)]
             start_hotkey_listener(handle.clone());
+            start_overlay_poller(handle.clone());
             start_background_pollers(handle);
 
             Ok(())

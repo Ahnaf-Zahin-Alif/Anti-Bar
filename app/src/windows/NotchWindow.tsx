@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   Check,
   Clipboard,
@@ -18,7 +19,7 @@ import {
   Timer,
   Trash2,
 } from "lucide-react";
-import { AppConfig, ClipboardItem, LyricsResult, MediaState } from "../types";
+import { AppConfig, ClipboardItem, HitboxRect, LyricsResult, MediaState } from "../types";
 import { STRINGS } from "../i18n";
 import {
   filterClipboardItems,
@@ -32,7 +33,8 @@ type ClipFilter = "all" | "text" | "image";
 
 interface ShelfFile {
   name: string;
-  size: number;
+  path: string;
+  size?: number;
 }
 
 const TIMER_PRESETS = [5, 15, 25, 45, 60];
@@ -66,6 +68,7 @@ export function NotchWindow() {
   );
   const lastTrackRef = useRef("");
   const hoverTimerRef = useRef<number | null>(null);
+  const pillRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     invoke<AppConfig>("get_config").then(setConfig).catch(() => {});
@@ -139,12 +142,52 @@ export function NotchWindow() {
   }, [timerRunning]);
 
   useEffect(() => {
-    invoke("resize_overlay", {
-      label: "notch",
-      width: expanded ? 470 : 256,
-      height: expanded ? 344 : 46,
-    }).catch(() => {});
-  }, [expanded]);
+    const syncHitboxes = () => {
+      const el = pillRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const rects: HitboxRect[] =
+        r.width > 0 && r.height > 0 ? [{ x: r.left, y: r.top, width: r.width, height: r.height }] : [];
+      invoke("update_overlay_hitboxes", {
+        label: "notch",
+        rects,
+        forceInteractive: expanded,
+      }).catch(() => {});
+    };
+    syncHitboxes();
+    const ro = new ResizeObserver(syncHitboxes);
+    if (pillRef.current) ro.observe(pillRef.current);
+    return () => ro.disconnect();
+  }, [expanded, tab]);
+
+  useEffect(() => {
+    let unlistenDrag: (() => void) | null = null;
+    getCurrentWebview()
+      .onDragDropEvent((event) => {
+        if (event.payload.type === "enter" || event.payload.type === "over") {
+          setExpanded(true);
+          setTab("shelf");
+        } else if (event.payload.type === "drop") {
+          const added: ShelfFile[] = event.payload.paths.map((p) => ({
+            path: p,
+            name: p.split(/[\\/]/).pop() || p,
+          }));
+          if (added.length > 0) {
+            setShelf((prev) => {
+              const seen = new Set(prev.map((x) => x.path));
+              return [...prev, ...added.filter((x) => !seen.has(x.path))];
+            });
+          }
+        }
+      })
+      .then((u) => {
+        unlistenDrag = u;
+      })
+      .catch(() => {});
+    return () => {
+      if (unlistenDrag) unlistenDrag();
+    };
+  }, []);
 
   const activeLyric =
     [...(lyrics?.synced ?? [])].reverse().find((l) => l.timeSec <= media.positionSec)?.text ?? "";
@@ -187,6 +230,7 @@ export function NotchWindow() {
   return (
     <div className="notch-shell theme-dark">
       <div
+        ref={pillRef}
         className={`notch-pill ${expanded ? "expanded" : ""}`}
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
@@ -355,15 +399,6 @@ export function NotchWindow() {
 
               {tab === "shelf" && (
                 <div
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    const dropped = Array.from(e.dataTransfer.files).map((f) => ({
-                      name: f.name,
-                      size: f.size,
-                    }));
-                    setShelf((prev) => [...prev, ...dropped]);
-                  }}
                   style={{
                     border: "1px dashed rgba(255,255,255,0.22)",
                     borderRadius: 14,
@@ -376,17 +411,53 @@ export function NotchWindow() {
                     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
                       <FolderOpen size={22} color="#38bdf8" />
                       <div style={{ color: "#e2e8f0", fontWeight: 600 }}>File Shelf is Empty</div>
-                      <div style={{ fontSize: 12 }}>Drag files from File Explorer to the Notch to hold them.</div>
+                      <div style={{ fontSize: 12 }}>Drag files from File Explorer to the Notch to hold them, then drag out to any app.</div>
                     </div>
                   ) : (
                     <div style={{ display: "flex", flexDirection: "column", gap: 6, textAlign: "left", maxHeight: 168, overflowY: "auto" }}>
                       {shelf.map((f, i) => (
-                        <div key={`${f.name}-${i}`} style={{ display: "flex", alignItems: "center", gap: 8, color: "#f8fafc" }}>
+                        <div
+                          key={`${f.path}-${i}`}
+                          title="Drag out to Explorer, browser, or another app"
+                          onMouseDown={(e) => {
+                            if (e.button !== 0 || !f.path) return;
+                            const startX = e.clientX;
+                            const startY = e.clientY;
+                            let started = false;
+                            const onMove = (ev: MouseEvent) => {
+                              if (started) return;
+                              if (Math.hypot(ev.clientX - startX, ev.clientY - startY) > 6) {
+                                started = true;
+                                cleanup();
+                                invoke("start_shelf_file_drag", { paths: [f.path] }).catch(() => {});
+                              }
+                            };
+                            const cleanup = () => {
+                              window.removeEventListener("mousemove", onMove);
+                              window.removeEventListener("mouseup", cleanup);
+                            };
+                            window.addEventListener("mousemove", onMove);
+                            window.addEventListener("mouseup", cleanup);
+                          }}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 8,
+                            color: "#f8fafc",
+                            cursor: "grab",
+                            padding: "4px 6px",
+                            borderRadius: 8,
+                            background: "rgba(255,255,255,0.04)",
+                          }}
+                        >
                           <FileText size={14} />
                           <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</span>
-                          <span style={{ fontSize: 11, color: "#94a3b8" }}>{formatBytes(f.size)}</span>
+                          {typeof f.size === "number" && (
+                            <span style={{ fontSize: 11, color: "#94a3b8" }}>{formatBytes(f.size)}</span>
+                          )}
                           <button
                             className="icon-btn"
+                            onMouseDown={(e) => e.stopPropagation()}
                             onClick={() => setShelf((prev) => prev.filter((_, idx) => idx !== i))}
                           >
                             <Trash2 size={12} />

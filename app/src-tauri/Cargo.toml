@@ -28,6 +28,7 @@ dirs = "5"
 webview2-com = "0.39.1"
 windows = { version = "0.58", features = [
   "ApplicationModel",
+  "Devices_Radios",
   "Foundation",
   "Foundation_Collections",
   "Foundation_Numerics",
@@ -35,6 +36,7 @@ windows = { version = "0.58", features = [
   "Storage_Streams",
   "UI_Notifications",
   "UI_Notifications_Management",
+  "Win32_Devices_Display",
   "Win32_Foundation",
   "Win32_Graphics_Dwm",
   "Win32_Graphics_Gdi",
@@ -59,10 +61,12 @@ windows = { version = "0.58", features = [
   "Win32_System_DataExchange",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_Memory",
+  "Win32_System_Ole",
   "Win32_System_Power",
   "Win32_System_ProcessStatus",
   "Win32_System_Registry",
   "Win32_System_SystemInformation",
+  "Win32_System_SystemServices",
   "Win32_System_Threading",
   "Win32_System_Variant",
   "Win32_UI_Shell",

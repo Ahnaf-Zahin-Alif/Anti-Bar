@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Layers, LayoutGrid, Palette, Sliders, Sparkles } from "lucide-react";
-import { AppConfig, IcsEvent } from "../types";
+import { AppConfig, IcsEvent, MonitorInfo } from "../types";
 import { STRINGS } from "../i18n";
 import { isValidHttpsUrl } from "../utils";
 
@@ -12,11 +12,13 @@ export function SettingsWindow() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [tab, setTab] = useState<Tab>("appearance");
   const [feedStatus, setFeedStatus] = useState<string>("");
+  const [monitors, setMonitors] = useState<MonitorInfo[]>([]);
   const saveTimer = useRef<number | null>(null);
   const pendingConfig = useRef<AppConfig | null>(null);
 
   useEffect(() => {
     invoke<AppConfig>("get_config").then(setConfig).catch(() => {});
+    invoke<MonitorInfo[]>("get_monitors").then(setMonitors).catch(() => {});
     const unlistenCfg = listen<AppConfig>("antibar://config-changed", (e) => setConfig(e.payload));
     return () => {
       if (saveTimer.current) {
@@ -112,6 +114,33 @@ export function SettingsWindow() {
             <div className="setting-row">
               <span>{STRINGS.hideInFullscreen}</span>
               <input type="checkbox" checked={config.hideInFullscreen} onChange={(e) => patch({ hideInFullscreen: e.target.checked })} />
+            </div>
+            <div className="setting-row">
+              <span>Auto-Hide Dock (Reveal on Bottom Edge)</span>
+              <input type="checkbox" checked={config.autoHideDock} onChange={(e) => patch({ autoHideDock: e.target.checked })} />
+            </div>
+            <div className="setting-row">
+              <span>Display Monitor</span>
+              <select
+                className="pill-select"
+                value={config.monitorMode === "custom" ? `custom:${config.monitorName}` : config.monitorMode}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val.startsWith("custom:")) {
+                    patch({ monitorMode: "custom", monitorName: val.slice(7) });
+                  } else {
+                    patch({ monitorMode: val, monitorName: "" });
+                  }
+                }}
+              >
+                <option value="primary">Primary Display</option>
+                <option value="cursor">Follow Cursor</option>
+                {monitors.map((m) => (
+                  <option key={m.name} value={`custom:${m.name}`}>
+                    {m.name} ({m.width}x{m.height}){m.isPrimary ? " · Primary" : ""}
+                  </option>
+                ))}
+              </select>
             </div>
             <div className="setting-row">
               <span>Show Clock &amp; Notifications Pill on Dock</span>

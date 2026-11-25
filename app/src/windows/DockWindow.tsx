@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   AppWindow,
   ArrowLeft,
@@ -22,6 +23,7 @@ import {
   Search,
   Settings,
   SlidersHorizontal,
+  Sun,
   Trash2,
   Volume2,
   VolumeX,
@@ -32,7 +34,9 @@ import {
   AppConfig,
   AudioOutputDevice,
   AudioSessionInfo,
+  BluetoothStatus,
   DownloadEntry,
+  HitboxRect,
   IcsEvent,
   NotificationsSnapshot,
   RunningWindow,
@@ -60,11 +64,15 @@ export function DockWindow() {
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
   const [previewData, setPreviewData] = useState<{ hwnd: number; img: string | null } | null>(null);
   const [fullscreenHidden, setFullscreenHidden] = useState(false);
+  const [autoHidden, setAutoHidden] = useState(false);
   const [popover, setPopover] = useState<PopoverKind>("none");
   const [downloads, setDownloads] = useState<DownloadEntry[]>([]);
   const [audioSessions, setAudioSessions] = useState<AudioSessionInfo[]>([]);
   const [audioOutputs, setAudioOutputs] = useState<AudioOutputDevice[]>([]);
   const [wifiNets, setWifiNets] = useState<WifiNetwork[]>([]);
+  const [btStatus, setBtStatus] = useState<BluetoothStatus>({ available: false, enabled: false });
+  const [brightness, setBrightness] = useState<number | null>(null);
+  const [dropTargetKey, setDropTargetKey] = useState<string | null>(null);
   const [icsEvents, setIcsEvents] = useState<IcsEvent[]>([]);
   const [actionError, setActionError] = useState<string | null>(null);
   const [notifications, setNotifications] = useState<NotificationsSnapshot>({ status: "unspecified", items: [] });
@@ -78,6 +86,7 @@ export function DockWindow() {
   const [calMonth, setCalMonth] = useState(() => ({ year: new Date().getFullYear(), month: new Date().getMonth() }));
   const [selectedDateStr, setSelectedDateStr] = useState(() => toLocalDateKey(new Date()));
 
+  const shellRef = useRef<HTMLDivElement | null>(null);
   const pillRef = useRef<HTMLDivElement | null>(null);
   const previewTimerRef = useRef<number | null>(null);
   const leaveTimerRef = useRef<number | null>(null);
@@ -111,6 +120,7 @@ export function DockWindow() {
     const clockTimer = setInterval(() => setNowDate(new Date()), 10000);
     const unlistenCfg = listen<AppConfig>("antibar://config-changed", (e) => setConfig(e.payload));
     const unlistenFs = listen<boolean>("antibar://fullscreen-changed", (e) => setFullscreenHidden(e.payload));
+    const unlistenAh = listen<boolean>("antibar://dock-autohide", (e) => setAutoHidden(e.payload));
     return () => {
       clearInterval(fastTimer);
       clearInterval(slowTimer);
@@ -119,6 +129,7 @@ export function DockWindow() {
       if (leaveTimerRef.current) window.clearTimeout(leaveTimerRef.current);
       unlistenCfg.then((u) => u());
       unlistenFs.then((u) => u());
+      unlistenAh.then((u) => u());
     };
   }, []);
 
@@ -189,15 +200,83 @@ export function DockWindow() {
 
   useEffect(() => {
     if (!config || !windowsLoaded) return;
-    invoke("resize_overlay", {
-      label: "dock",
-      width: dockWidth,
-      height: dockHeight,
-    }).catch(() => {});
-  }, [config, windowsLoaded, dockWidth, dockHeight]);
+    const syncHitboxes = () => {
+      if ((config.hideInFullscreen && fullscreenHidden) || (config.autoHideDock && autoHidden && popover === "none")) {
+        invoke("update_overlay_hitboxes", { label: "dock", rects: [], forceInteractive: false }).catch(() => {});
+        return;
+      }
+      const root = shellRef.current;
+      if (!root) return;
+      const els = root.querySelectorAll<HTMLElement>(".dock-pill, .dock-popover, .dock-preview-card");
+      const rects: HitboxRect[] = [];
+      els.forEach((el) => {
+        const r = el.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) {
+          rects.push({ x: r.left, y: r.top, width: r.width, height: r.height });
+        }
+      });
+      invoke("update_overlay_hitboxes", {
+        label: "dock",
+        rects,
+        forceInteractive: popover !== "none" || Boolean(hoveredItem),
+      }).catch(() => {});
+    };
+    syncHitboxes();
+    const ro = new ResizeObserver(syncHitboxes);
+    if (shellRef.current) ro.observe(shellRef.current);
+    return () => ro.disconnect();
+  }, [config, windowsLoaded, dockWidth, dockHeight, popover, hoveredItem, fullscreenHidden, autoHidden]);
+
+  useEffect(() => {
+    let unlistenDrag: (() => void) | null = null;
+    const findDockTarget = (pos: { x: number; y: number }): { key: string; path: string } | null => {
+      const dpr = window.devicePixelRatio || 1;
+      const lx = pos.x / dpr;
+      const ly = pos.y / dpr;
+      const btns = shellRef.current?.querySelectorAll<HTMLElement>("[data-dock-path]");
+      if (!btns) return null;
+      for (const b of btns) {
+        const r = b.getBoundingClientRect();
+        if (lx >= r.left && lx <= r.right && ly >= r.top && ly <= r.bottom) {
+          const key = b.dataset.dockKey || "";
+          const path = b.dataset.dockPath || "";
+          if (key && path) return { key, path };
+        }
+      }
+      return null;
+    };
+
+    getCurrentWebview()
+      .onDragDropEvent((event) => {
+        if (event.payload.type === "enter" || event.payload.type === "over") {
+          const hit = findDockTarget(event.payload.position);
+          setDropTargetKey(hit ? hit.key : null);
+        } else if (event.payload.type === "leave") {
+          setDropTargetKey(null);
+        } else if (event.payload.type === "drop") {
+          const hit = findDockTarget(event.payload.position);
+          setDropTargetKey(null);
+          if (hit && event.payload.paths.length > 0) {
+            invoke("open_files_with_app", {
+              appPath: hit.path,
+              filePaths: event.payload.paths,
+            }).catch(reportError);
+          }
+        }
+      })
+      .then((u) => {
+        unlistenDrag = u;
+      })
+      .catch(() => {});
+
+    return () => {
+      if (unlistenDrag) unlistenDrag();
+    };
+  }, []);
 
   if (!config) return null;
   if (config.hideInFullscreen && fullscreenHidden) return null;
+  if (config.autoHideDock && autoHidden && popover === "none") return null;
 
   const calcScale = (idx: number) => {
     if (hoveredIdx === null) return 1;
@@ -257,8 +336,16 @@ export function DockWindow() {
         setAudioSessions(sess);
         setAudioOutputs(outs);
       } else if (resolved === "control") {
-        setWifiNets(await invoke<WifiNetwork[]>("get_wifi_networks"));
-        setSysStatus(await invoke<SystemStatus>("get_system_status"));
+        const [nets, st, bt, br] = await Promise.all([
+          invoke<WifiNetwork[]>("get_wifi_networks"),
+          invoke<SystemStatus>("get_system_status"),
+          invoke<BluetoothStatus>("get_bluetooth_status").catch((): BluetoothStatus => ({ available: false, enabled: false })),
+          invoke<number | null>("get_brightness").catch(() => null),
+        ]);
+        setWifiNets(nets);
+        setSysStatus(st);
+        setBtStatus(bt);
+        setBrightness(br);
       } else if (resolved === "calendar") {
         const snap = await invoke<NotificationsSnapshot>("get_notifications", { requestAccess: true }).catch(
           (): NotificationsSnapshot => ({ status: "unsupported", items: [] })
@@ -309,7 +396,7 @@ export function DockWindow() {
       : 8;
 
   return (
-    <div className={`dock-shell theme-${config.theme}`}>
+    <div ref={shellRef} className={`dock-shell theme-${config.theme}`}>
       {actionError && (
         <div className="dock-tooltip" style={{ opacity: 1, bottom: 96, transform: "none" }}>
           {actionError}
@@ -739,11 +826,30 @@ export function DockWindow() {
             )}
           </div>
           <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-            <button className="icon-btn" style={{ flex: 1, gap: 6 }} onClick={() => invoke("run_power_action", { action: "wifi" }).catch(reportError)}>
+            <button
+              className={`icon-btn ${wifiNets.some((w) => w.connected) ? "active" : ""}`}
+              style={{ flex: 1, gap: 6 }}
+              onClick={() => invoke("run_power_action", { action: "wifi" }).catch(reportError)}
+            >
               <Wifi size={14} /> Wi-Fi
             </button>
-            <button className="icon-btn" style={{ flex: 1, gap: 6 }} onClick={() => invoke("run_power_action", { action: "bluetooth" }).catch(reportError)}>
-              <Bluetooth size={14} /> Bluetooth
+            <button
+              className={`icon-btn ${btStatus.enabled ? "active" : ""}`}
+              style={{ flex: 1, gap: 6 }}
+              onClick={async () => {
+                if (!btStatus.available) {
+                  await invoke("run_power_action", { action: "bluetooth" }).catch(reportError);
+                  return;
+                }
+                const next = !btStatus.enabled;
+                setBtStatus((prev) => ({ ...prev, enabled: next }));
+                await invoke("set_bluetooth_enabled", { enabled: next }).catch((e) => {
+                  setBtStatus((prev) => ({ ...prev, enabled: !next }));
+                  reportError(e);
+                });
+              }}
+            >
+              <Bluetooth size={14} /> {btStatus.available ? (btStatus.enabled ? "BT On" : "BT Off") : "Bluetooth"}
             </button>
             <button className="icon-btn" onClick={() => invoke("run_power_action", { action: "lock" }).catch(reportError)} title="Lock PC">
               <Lock size={14} />
@@ -752,15 +858,51 @@ export function DockWindow() {
               <Power size={14} />
             </button>
           </div>
+          {brightness !== null && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+              <Sun size={14} color="#f59e0b" />
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={brightness}
+                style={{ flex: 1 }}
+                onChange={(e) => {
+                  const val = Number(e.target.value);
+                  setBrightness(val);
+                  invoke("set_brightness", { percent: val }).catch(reportError);
+                }}
+              />
+              <span style={{ fontSize: 11, width: 32, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                {brightness}%
+              </span>
+            </div>
+          )}
           <div className="muted-label" style={{ fontSize: 12, marginBottom: 6 }}>
-            Nearby Wi-Fi
+            Nearby Wi-Fi (Click to Connect / Disconnect)
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             {wifiNets.slice(0, 6).map((w) => (
-              <div key={w.ssid} className="dl-entry" style={{ justifyContent: "space-between" }}>
+              <button
+                key={w.ssid}
+                className="dl-entry"
+                style={{ justifyContent: "space-between", width: "100%", textAlign: "left" }}
+                onClick={async () => {
+                  try {
+                    if (w.connected) {
+                      await invoke("disconnect_wifi");
+                    } else {
+                      await invoke("connect_wifi", { ssid: w.ssid });
+                    }
+                    setWifiNets(await invoke<WifiNetwork[]>("get_wifi_networks"));
+                  } catch (e) {
+                    reportError(e);
+                  }
+                }}
+              >
                 <span>{w.ssid}{w.connected ? " (Connected)" : ""}</span>
                 <span>{w.signalQuality}%</span>
-              </div>
+              </button>
             ))}
           </div>
         </div>
@@ -778,17 +920,21 @@ export function DockWindow() {
           </span>
         ) : (
           items.map((item, idx) => {
-            const scale = calcScale(idx);
+            const scale = dropTargetKey === item.key ? Math.max(calcScale(idx), 1.25) : calcScale(idx);
             return (
               <button
                 key={item.key}
+                data-dock-key={item.key}
+                data-dock-path={item.path}
                 className="dock-item"
                 onMouseEnter={() => handleAppHover(idx, item.hwnd)}
-                onClick={() => invoke("toggle_window", { hwnd: item.hwnd })}
+                onClick={() => invoke("toggle_window", { hwnd: item.hwnd }).catch(reportError)}
                 style={{
                   transform: `scale(${scale}) translateY(${-(scale - 1) * 18}px)`,
                   marginLeft: scale > 1.05 ? 4 : 0,
                   marginRight: scale > 1.05 ? 4 : 0,
+                  outline: dropTargetKey === item.key ? "2px solid #38bdf8" : undefined,
+                  borderRadius: 12,
                 }}
               >
                 <span

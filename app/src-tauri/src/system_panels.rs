@@ -765,3 +765,252 @@ pub fn clear_all_notifications() -> Result<(), String> {
 pub fn clear_all_notifications() -> Result<(), String> {
     Ok(())
 }
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BluetoothStatus {
+    pub available: bool,
+    pub enabled: bool,
+}
+
+#[cfg(windows)]
+pub fn get_bluetooth_status() -> BluetoothStatus {
+    use windows::Devices::Radios::{Radio, RadioKind, RadioState};
+
+    let Ok(op) = Radio::GetRadiosAsync() else {
+        return BluetoothStatus::default();
+    };
+    let Ok(radios) = op.get() else {
+        return BluetoothStatus::default();
+    };
+    let count = radios.Size().unwrap_or(0);
+    for i in 0..count {
+        if let Ok(r) = radios.GetAt(i) {
+            if r.Kind().ok() == Some(RadioKind::Bluetooth) {
+                let enabled = r.State().ok() == Some(RadioState::On);
+                return BluetoothStatus {
+                    available: true,
+                    enabled,
+                };
+            }
+        }
+    }
+    BluetoothStatus::default()
+}
+
+#[cfg(not(windows))]
+pub fn get_bluetooth_status() -> BluetoothStatus {
+    BluetoothStatus::default()
+}
+
+#[cfg(windows)]
+pub fn set_bluetooth_enabled(enabled: bool) -> Result<(), String> {
+    use windows::Devices::Radios::{Radio, RadioKind, RadioState};
+
+    let radios = Radio::GetRadiosAsync()
+        .map_err(|e| e.to_string())?
+        .get()
+        .map_err(|e| e.to_string())?;
+    let count = radios.Size().unwrap_or(0);
+    let target = if enabled {
+        RadioState::On
+    } else {
+        RadioState::Off
+    };
+    for i in 0..count {
+        if let Ok(r) = radios.GetAt(i) {
+            if r.Kind().ok() == Some(RadioKind::Bluetooth) {
+                r.SetStateAsync(target)
+                    .map_err(|e| e.to_string())?
+                    .get()
+                    .map_err(|e| e.to_string())?;
+                return Ok(());
+            }
+        }
+    }
+    Err("No Bluetooth radio found".into())
+}
+
+#[cfg(not(windows))]
+pub fn set_bluetooth_enabled(_enabled: bool) -> Result<(), String> {
+    Err("Bluetooth control is only supported on Windows".into())
+}
+
+#[cfg(windows)]
+pub fn connect_wifi(ssid: &str) -> Result<(), String> {
+    use windows::core::{HSTRING, PCWSTR};
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::NetworkManagement::WiFi::{
+        dot11_BSS_type_any, wlan_connection_mode_profile, WlanCloseHandle, WlanConnect,
+        WlanEnumInterfaces, WlanFreeMemory, WlanOpenHandle, WLAN_CONNECTION_PARAMETERS,
+    };
+
+    let clean = ssid.trim();
+    if clean.is_empty() {
+        return Err("Empty SSID".into());
+    }
+    let profile = HSTRING::from(clean);
+    unsafe {
+        let mut neg_ver = 0u32;
+        let mut handle = HANDLE::default();
+        let rc = WlanOpenHandle(2, None, &mut neg_ver, &mut handle);
+        if rc != 0 {
+            return Err(format!("WlanOpenHandle failed ({})", rc));
+        }
+        let mut iface_list_ptr = std::ptr::null_mut();
+        let mut res = Err("No Wi-Fi interface found".to_string());
+        if WlanEnumInterfaces(handle, None, &mut iface_list_ptr) == 0 && !iface_list_ptr.is_null() {
+            let iface_list = &*iface_list_ptr;
+            if iface_list.dwNumberOfItems > 0 {
+                let ifaces = std::slice::from_raw_parts(
+                    iface_list.InterfaceInfo.as_ptr(),
+                    iface_list.dwNumberOfItems as usize,
+                );
+                let params = WLAN_CONNECTION_PARAMETERS {
+                    wlanConnectionMode: wlan_connection_mode_profile,
+                    strProfile: PCWSTR(profile.as_ptr()),
+                    pDot11Ssid: std::ptr::null_mut(),
+                    pDesiredBssidList: std::ptr::null_mut(),
+                    dot11BssType: dot11_BSS_type_any,
+                    dwFlags: 0,
+                };
+                let c_rc = WlanConnect(handle, &ifaces[0].InterfaceGuid, &params, None);
+                if c_rc == 0 {
+                    res = Ok(());
+                } else {
+                    res = Err(format!("WlanConnect failed ({})", c_rc));
+                }
+            }
+            WlanFreeMemory(iface_list_ptr as *mut _);
+        }
+        let _ = WlanCloseHandle(handle, None);
+        res
+    }
+}
+
+#[cfg(not(windows))]
+pub fn connect_wifi(_ssid: &str) -> Result<(), String> {
+    Err("Wi-Fi control is only supported on Windows".into())
+}
+
+#[cfg(windows)]
+pub fn disconnect_wifi() -> Result<(), String> {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::NetworkManagement::WiFi::{
+        WlanCloseHandle, WlanDisconnect, WlanEnumInterfaces, WlanFreeMemory, WlanOpenHandle,
+    };
+
+    unsafe {
+        let mut neg_ver = 0u32;
+        let mut handle = HANDLE::default();
+        let rc = WlanOpenHandle(2, None, &mut neg_ver, &mut handle);
+        if rc != 0 {
+            return Err(format!("WlanOpenHandle failed ({})", rc));
+        }
+        let mut iface_list_ptr = std::ptr::null_mut();
+        let mut res = Err("No Wi-Fi interface found".to_string());
+        if WlanEnumInterfaces(handle, None, &mut iface_list_ptr) == 0 && !iface_list_ptr.is_null() {
+            let iface_list = &*iface_list_ptr;
+            if iface_list.dwNumberOfItems > 0 {
+                let ifaces = std::slice::from_raw_parts(
+                    iface_list.InterfaceInfo.as_ptr(),
+                    iface_list.dwNumberOfItems as usize,
+                );
+                let d_rc = WlanDisconnect(handle, &ifaces[0].InterfaceGuid, None);
+                if d_rc == 0 {
+                    res = Ok(());
+                } else {
+                    res = Err(format!("WlanDisconnect failed ({})", d_rc));
+                }
+            }
+            WlanFreeMemory(iface_list_ptr as *mut _);
+        }
+        let _ = WlanCloseHandle(handle, None);
+        res
+    }
+}
+
+#[cfg(not(windows))]
+pub fn disconnect_wifi() -> Result<(), String> {
+    Err("Wi-Fi control is only supported on Windows".into())
+}
+
+#[cfg(windows)]
+pub fn get_brightness() -> Option<u32> {
+    use windows::Win32::Devices::Display::{
+        DestroyPhysicalMonitors, GetMonitorBrightness, GetNumberOfPhysicalMonitorsFromHMONITOR,
+        GetPhysicalMonitorsFromHMONITOR, PHYSICAL_MONITOR,
+    };
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTOPRIMARY};
+
+    unsafe {
+        let mon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+        let mut count = 0u32;
+        if GetNumberOfPhysicalMonitorsFromHMONITOR(mon, &mut count).is_err() || count == 0 {
+            return None;
+        }
+        let mut pms = vec![PHYSICAL_MONITOR::default(); count as usize];
+        if GetPhysicalMonitorsFromHMONITOR(mon, &mut pms).is_err() {
+            return None;
+        }
+        let mut min_b = 0u32;
+        let mut cur_b = 0u32;
+        let mut max_b = 0u32;
+        let ok = GetMonitorBrightness(pms[0].hPhysicalMonitor, &mut min_b, &mut cur_b, &mut max_b) != 0;
+        let _ = DestroyPhysicalMonitors(&pms);
+        if ok && max_b > min_b {
+            Some((((cur_b - min_b) * 100) / (max_b - min_b)).min(100))
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn get_brightness() -> Option<u32> {
+    None
+}
+
+#[cfg(windows)]
+pub fn set_brightness(percent: u32) -> Result<(), String> {
+    use windows::Win32::Devices::Display::{
+        DestroyPhysicalMonitors, GetMonitorBrightness, GetNumberOfPhysicalMonitorsFromHMONITOR,
+        GetPhysicalMonitorsFromHMONITOR, SetMonitorBrightness, PHYSICAL_MONITOR,
+    };
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTOPRIMARY};
+
+    let pct = percent.min(100);
+    unsafe {
+        let mon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+        let mut count = 0u32;
+        GetNumberOfPhysicalMonitorsFromHMONITOR(mon, &mut count).map_err(|e| e.to_string())?;
+        if count == 0 {
+            return Err("No physical monitors found".into());
+        }
+        let mut pms = vec![PHYSICAL_MONITOR::default(); count as usize];
+        GetPhysicalMonitorsFromHMONITOR(mon, &mut pms).map_err(|e| e.to_string())?;
+        let mut min_b = 0u32;
+        let mut cur_b = 0u32;
+        let mut max_b = 100u32;
+        let _ = GetMonitorBrightness(pms[0].hPhysicalMonitor, &mut min_b, &mut cur_b, &mut max_b);
+        let target = if max_b > min_b {
+            min_b + ((max_b - min_b) * pct) / 100
+        } else {
+            pct
+        };
+        let ok = SetMonitorBrightness(pms[0].hPhysicalMonitor, target) != 0;
+        let _ = DestroyPhysicalMonitors(&pms);
+        if ok {
+            Ok(())
+        } else {
+            Err("Monitor does not support DDC/CI brightness".into())
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn set_brightness(_percent: u32) -> Result<(), String> {
+    Err("Brightness control is only supported on Windows".into())
+}
