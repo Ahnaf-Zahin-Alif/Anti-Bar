@@ -62,7 +62,7 @@ fn spawn_hook_thread(app: AppHandle) {
                     if was_down && !used_combo {
                         if let Some(h) = APP_HANDLE.get() {
                             let _ = h.emit("antibar://win-key-tapped", ());
-                            crate::toggle_spotlight(h.clone());
+                            crate::spawn_toggle_spotlight(h.clone());
                         }
                         return LRESULT(1);
                     }
@@ -77,6 +77,10 @@ fn spawn_hook_thread(app: AppHandle) {
     std::thread::spawn(move || unsafe {
         let tid = windows::Win32::System::Threading::GetCurrentThreadId();
         HOOK_THREAD_ID.store(tid, Ordering::SeqCst);
+        if !HOOK_STARTED.load(Ordering::SeqCst) {
+            HOOK_THREAD_ID.store(0, Ordering::SeqCst);
+            return;
+        }
         let Ok(hook) = SetWindowsHookExW(WH_KEYBOARD_LL, Some(ll_proc), None, 0) else {
             HOOK_STARTED.store(false, Ordering::SeqCst);
             HOOK_THREAD_ID.store(0, Ordering::SeqCst);

@@ -23,7 +23,12 @@ export function SpotlightWindow() {
       setCopiedMath(false);
       setTimeout(() => inputRef.current?.focus(), 40);
     });
+    const onBlur = () => {
+      invoke("hide_spotlight").catch(() => {});
+    };
+    window.addEventListener("blur", onBlur);
     return () => {
+      window.removeEventListener("blur", onBlur);
       unlistenCfg.then((u) => u());
       unlisten.then((u) => u());
     };

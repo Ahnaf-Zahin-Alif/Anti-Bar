@@ -107,6 +107,7 @@ pub fn parse_ics_events(ics_text: &str) -> Vec<IcsEvent> {
             }
         }
     }
+    events.sort_by(|a, b| a.dtstart.cmp(&b.dtstart));
     events.truncate(20);
     events
 }

@@ -176,6 +176,27 @@ impl Drop for LockedHGlobal {
 }
 
 #[cfg(windows)]
+struct OwnedHGlobal(Option<windows::Win32::Foundation::HGLOBAL>);
+
+#[cfg(windows)]
+impl OwnedHGlobal {
+    fn disarm(&mut self) -> windows::Win32::Foundation::HGLOBAL {
+        self.0.take().expect("OwnedHGlobal already disarmed")
+    }
+}
+
+#[cfg(windows)]
+impl Drop for OwnedHGlobal {
+    fn drop(&mut self) {
+        if let Some(h) = self.0.take() {
+            unsafe {
+                let _ = windows::Win32::Foundation::GlobalFree(h);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
 pub fn read_clipboard_unicode_text() -> Option<String> {
     use windows::Win32::Foundation::HGLOBAL;
     use windows::Win32::System::DataExchange::{GetClipboardData, IsClipboardFormatAvailable};
@@ -211,10 +232,12 @@ pub fn write_clipboard_unicode_text(text: &str) -> Result<(), String> {
         let _clip = ClipboardSession::open()?;
         EmptyClipboard().map_err(|e| e.to_string())?;
         let hmem: HGLOBAL = GlobalAlloc(GMEM_MOVEABLE, bytes).map_err(|e| e.to_string())?;
+        let mut owned = OwnedHGlobal(Some(hmem));
         let locked = LockedHGlobal::lock(hmem).ok_or_else(|| "GlobalLock returned null".to_string())?;
         std::ptr::copy_nonoverlapping(wide.as_ptr(), locked.1 as *mut u16, wide.len());
         drop(locked);
         SetClipboardData(CF_UNICODETEXT, HANDLE(hmem.0)).map_err(|e| e.to_string())?;
+        owned.disarm();
         Ok(())
     }
 }
@@ -259,10 +282,10 @@ pub fn read_clipboard_image_data_url() -> Option<String> {
         }
         let w = bih.biWidth;
         let h_raw = bih.biHeight;
-        if w <= 0 || h_raw == 0 || w > 2400 || h_raw.abs() > 2400 {
+        if w <= 0 || h_raw == 0 || w > 2400 || h_raw.unsigned_abs() > 2400 {
             return None;
         }
-        let h = h_raw.abs();
+        let h = h_raw.unsigned_abs() as i32;
         let top_down = h_raw < 0;
         let header_sz = bih.biSize as usize;
         if header_sz < size_of::<BITMAPINFOHEADER>() || header_sz > total_size {
@@ -351,6 +374,7 @@ pub fn write_clipboard_png_data_url(data_url: &str) -> Result<(), String> {
         let _clip = ClipboardSession::open()?;
         EmptyClipboard().map_err(|e| e.to_string())?;
         let hmem: HGLOBAL = GlobalAlloc(GMEM_MOVEABLE, total_bytes).map_err(|e| e.to_string())?;
+        let mut owned = OwnedHGlobal(Some(hmem));
         let locked = LockedHGlobal::lock(hmem).ok_or_else(|| "GlobalLock returned null".to_string())?;
         let ptr = locked.1 as *mut u8;
         let bih = BITMAPINFOHEADER {
@@ -394,6 +418,7 @@ pub fn write_clipboard_png_data_url(data_url: &str) -> Result<(), String> {
         }
         drop(locked);
         SetClipboardData(CF_DIB, HANDLE(hmem.0)).map_err(|e| e.to_string())?;
+        owned.disarm();
         Ok(())
     }
 }

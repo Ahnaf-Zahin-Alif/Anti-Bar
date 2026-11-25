@@ -39,131 +39,176 @@ fn get_config(state: State<AppState>) -> AppConfig {
 }
 
 #[tauri::command]
-fn update_config(app: AppHandle, state: State<AppState>, mut new_config: AppConfig) -> Result<AppConfig, String> {
+async fn update_config(app: AppHandle, state: State<'_, AppState>, mut new_config: AppConfig) -> Result<AppConfig, String> {
     config::sanitize_config(&mut new_config);
     {
         let mut guard = lock_recover(&state.config);
         *guard = new_config.clone();
     }
-    save_config(&new_config)?;
+    let cfg_save = new_config.clone();
+    tauri::async_runtime::spawn_blocking(move || save_config(&cfg_save))
+        .await
+        .map_err(|e| e.to_string())??;
     let _ = app.emit("antibar://config-changed", &new_config);
     sync_notch_window(&app, new_config.notch_enabled);
     win_hook::set_win_key_hook_enabled(&app, new_config.use_win_key_for_launchpad);
     dock_win::set_windows_taskbar_hidden(new_config.hide_windows_taskbar);
-    reposition_dock(&app, new_config.hide_windows_taskbar);
+    apply_dock_geometry(&app, None, None, new_config.hide_windows_taskbar);
     native_ui::sync_native_widgets(&new_config);
     Ok(new_config)
 }
 
 #[tauri::command]
-fn fetch_ics_agenda(url: String) -> Vec<native_ui::desktop_widgets::IcsEvent> {
+async fn fetch_ics_agenda(url: String) -> Vec<native_ui::desktop_widgets::IcsEvent> {
     let Some((host, pq)) = native_ui::desktop_widgets::parse_https_url(&url) else {
         return Vec::new();
     };
-    match system_panels::winhttp_get(&host, &pq, "text/calendar,text/plain") {
-        Ok(raw) => native_ui::desktop_widgets::parse_ics_events(&raw),
-        Err(_) => Vec::new(),
-    }
+    tauri::async_runtime::spawn_blocking(move || {
+        match system_panels::winhttp_get(&host, &pq, "text/calendar,text/plain") {
+            Ok(raw) => native_ui::desktop_widgets::parse_ics_events(&raw),
+            Err(_) => Vec::new(),
+        }
+    })
+    .await
+    .unwrap_or_default()
 }
 
 #[tauri::command]
-fn get_audio_sessions() -> Vec<audio_mixer::AudioSessionInfo> {
-    audio_mixer::list_audio_sessions()
+async fn get_audio_sessions() -> Vec<audio_mixer::AudioSessionInfo> {
+    tauri::async_runtime::spawn_blocking(audio_mixer::list_audio_sessions)
+        .await
+        .unwrap_or_default()
 }
 
 #[tauri::command]
-fn set_app_volume(pid: u32, is_master: bool, volume: f32, muted: bool) -> Result<(), String> {
-    audio_mixer::set_session_volume(pid, is_master, volume, muted)
+async fn set_app_volume(pid: u32, is_master: bool, volume: f32, muted: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        audio_mixer::set_session_volume(pid, is_master, volume, muted)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn get_audio_outputs() -> Vec<audio_mixer::AudioOutputDevice> {
-    audio_mixer::list_output_devices()
+async fn get_audio_outputs() -> Vec<audio_mixer::AudioOutputDevice> {
+    tauri::async_runtime::spawn_blocking(audio_mixer::list_output_devices)
+        .await
+        .unwrap_or_default()
 }
 
 #[tauri::command]
-fn set_audio_output(device_id: String) -> Result<(), String> {
-    audio_mixer::set_default_output_device(&device_id)
+async fn set_audio_output(device_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || audio_mixer::set_default_output_device(&device_id))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn get_notifications(request_access: Option<bool>) -> system_panels::NotificationsSnapshot {
-    system_panels::list_notifications(request_access.unwrap_or(false))
+async fn get_notifications(request_access: Option<bool>) -> system_panels::NotificationsSnapshot {
+    let req = request_access.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || system_panels::list_notifications(req))
+        .await
+        .unwrap_or_default()
 }
 
 #[tauri::command]
-fn dismiss_notification(id: u32) -> Result<(), String> {
-    system_panels::dismiss_notification(id)
+async fn dismiss_notification(id: u32) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || system_panels::dismiss_notification(id))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn clear_notifications() -> Result<(), String> {
-    system_panels::clear_all_notifications()
+async fn clear_notifications() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(system_panels::clear_all_notifications)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn get_wifi_networks() -> Vec<system_panels::WifiNetwork> {
-    system_panels::list_wifi_networks()
+async fn get_wifi_networks() -> Vec<system_panels::WifiNetwork> {
+    tauri::async_runtime::spawn_blocking(system_panels::list_wifi_networks)
+        .await
+        .unwrap_or_default()
 }
 
 #[tauri::command]
-fn get_system_status() -> system_panels::SystemStatus {
-    system_panels::get_system_status()
+async fn get_system_status() -> system_panels::SystemStatus {
+    tauri::async_runtime::spawn_blocking(system_panels::get_system_status)
+        .await
+        .unwrap_or_default()
 }
 
 #[tauri::command]
-fn run_power_action(action: String) -> Result<(), String> {
-    system_panels::execute_power_action(&action)
+async fn run_power_action(action: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || system_panels::execute_power_action(&action))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn get_running_windows() -> Vec<dock_win::RunningWindow> {
-    dock_win::enumerate_running_windows()
+async fn get_running_windows() -> Vec<dock_win::RunningWindow> {
+    tauri::async_runtime::spawn_blocking(dock_win::enumerate_running_windows)
+        .await
+        .unwrap_or_default()
 }
 
 #[tauri::command]
-fn toggle_window(hwnd: isize) {
-    dock_win::toggle_window_hwnd(hwnd);
+async fn toggle_window(hwnd: isize) {
+    let _ = tauri::async_runtime::spawn_blocking(move || dock_win::toggle_window_hwnd(hwnd)).await;
 }
 
 #[tauri::command]
-fn close_window(hwnd: isize) {
-    dock_win::close_window_hwnd(hwnd);
+async fn close_window(hwnd: isize) {
+    let _ = tauri::async_runtime::spawn_blocking(move || dock_win::close_window_hwnd(hwnd)).await;
 }
 
 #[tauri::command]
-fn get_window_preview(hwnd: isize) -> Option<String> {
-    dock_win::capture_window_preview(hwnd)
+async fn get_window_preview(hwnd: isize) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || dock_win::capture_window_preview(hwnd))
+        .await
+        .ok()
+        .flatten()
 }
 
 #[tauri::command]
-fn launch_app(path: String, args: Option<String>) -> Result<(), String> {
-    dock_win::launch_path(&path, args.as_deref())
+async fn launch_app(path: String, args: Option<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || dock_win::launch_path(&path, args.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn get_downloads() -> Vec<dock_win::DownloadEntry> {
-    dock_win::list_downloads()
+async fn get_downloads() -> Vec<dock_win::DownloadEntry> {
+    tauri::async_runtime::spawn_blocking(dock_win::list_downloads)
+        .await
+        .unwrap_or_default()
 }
 
 #[tauri::command]
-fn get_trash_info() -> dock_win::TrashInfo {
-    dock_win::query_recycle_bin()
+async fn get_trash_info() -> dock_win::TrashInfo {
+    tauri::async_runtime::spawn_blocking(dock_win::query_recycle_bin)
+        .await
+        .unwrap_or_default()
 }
 
 #[tauri::command]
-fn empty_trash() -> Result<(), String> {
-    dock_win::empty_recycle_bin()
+async fn empty_trash() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(dock_win::empty_recycle_bin)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn open_trash() -> Result<(), String> {
-    dock_win::launch_path("shell:RecycleBinFolder", None)
+async fn open_trash() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(|| dock_win::launch_path("shell:RecycleBinFolder", None))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn open_hidden_tray() {
-    dock_win::toggle_windows_hidden_tray();
+async fn open_hidden_tray() {
+    let _ = tauri::async_runtime::spawn_blocking(dock_win::toggle_windows_hidden_tray).await;
 }
 
 const BROWSER_ARGS: &str = "--renderer-process-limit=1 --in-process-gpu --disable-crash-reporter --disk-cache-size=1 --media-cache-size=1 --js-flags=--max-old-space-size=48 --disable-gpu-shader-disk-cache --disable-features=BackForwardCache,Translate,msWebOOUI,msPdfOOUI,AutofillServerCommunication,MediaRouter";
@@ -187,7 +232,8 @@ fn apply_webview_memory_policy(win: &tauri::WebviewWindow, hidden: bool) {
             let mut raw_19: *mut c_void = std::ptr::null_mut();
             if core_unk.query(&IID_ICOREWEBVIEW2_19, &mut raw_19).is_ok() && !raw_19.is_null() {
                 let wv19: ICoreWebView2_19 = std::mem::transmute(raw_19);
-                let _ = wv19.SetMemoryUsageTargetLevel(COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL(1));
+                let level = if hidden { 1 } else { 0 };
+                let _ = wv19.SetMemoryUsageTargetLevel(COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL(level));
             }
         }
     });
@@ -197,7 +243,7 @@ fn apply_webview_memory_policy(win: &tauri::WebviewWindow, hidden: bool) {
 fn apply_webview_memory_policy(_win: &tauri::WebviewWindow, _hidden: bool) {}
 
 #[tauri::command]
-fn search_spotlight(state: State<AppState>, query: String) -> SpotlightSearchResult {
+async fn search_spotlight(state: State<'_, AppState>, query: String) -> Result<SpotlightSearchResult, String> {
     let math_answer = spotlight::eval_math_expr(&query).map(|v| {
         if (v.fract()).abs() < 1e-9 {
             format!("{}", v as i64)
@@ -210,24 +256,37 @@ fn search_spotlight(state: State<AppState>, query: String) -> SpotlightSearchRes
     });
 
     let q = query.trim().to_ascii_lowercase();
-    let mut entries: Vec<spotlight::SpotlightEntry> = {
+    let needs_index = lock_recover(&state.spotlight_cache).is_empty();
+    if needs_index {
+        let indexed = tauri::async_runtime::spawn_blocking(spotlight::index_installed_apps)
+            .await
+            .unwrap_or_default();
         let mut cache = lock_recover(&state.spotlight_cache);
         if cache.is_empty() {
-            *cache = spotlight::index_installed_apps();
+            *cache = indexed;
         }
+    }
+
+    let mut entries = {
+        let cache = lock_recover(&state.spotlight_cache);
         spotlight::filter_spotlight_entries(&cache, &q, 12)
     };
 
-    for e in &mut entries {
-        if e.icon_data_url.is_none() {
-            e.icon_data_url = dock_win::extract_path_icon_data_url(&e.path);
+    entries = tauri::async_runtime::spawn_blocking(move || {
+        for e in &mut entries {
+            if e.icon_data_url.is_none() {
+                e.icon_data_url = dock_win::extract_path_icon_data_url(&e.path);
+            }
         }
-    }
+        entries
+    })
+    .await
+    .unwrap_or_default();
 
-    SpotlightSearchResult {
+    Ok(SpotlightSearchResult {
         math_answer,
         entries,
-    }
+    })
 }
 
 #[tauri::command]
@@ -264,91 +323,116 @@ fn clear_clipboard_history(state: State<AppState>) -> Vec<clipboard::ClipboardIt
 }
 
 #[tauri::command]
-fn get_media_state() -> system_panels::MediaState {
-    system_panels::read_current_media()
+async fn get_media_state() -> system_panels::MediaState {
+    tauri::async_runtime::spawn_blocking(system_panels::read_current_media)
+        .await
+        .unwrap_or_default()
 }
 
 #[tauri::command]
-fn control_media(action: String) -> Result<(), String> {
-    system_panels::media_control(&action)
+async fn control_media(action: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || system_panels::media_control(&action))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn seek_media(position_sec: f64) -> Result<(), String> {
-    system_panels::seek_media_position(position_sec)
+async fn seek_media(position_sec: f64) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || system_panels::seek_media_position(position_sec))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn fetch_lyrics(title: String, artist: String, album: String, duration_sec: f64) -> system_panels::LyricsResult {
-    system_panels::fetch_synced_lyrics(&title, &artist, &album, duration_sec)
+async fn fetch_lyrics(
+    title: String,
+    artist: String,
+    album: String,
+    duration_sec: f64,
+) -> system_panels::LyricsResult {
+    tauri::async_runtime::spawn_blocking(move || {
+        system_panels::fetch_synced_lyrics(&title, &artist, &album, duration_sec)
+    })
+    .await
+    .unwrap_or_default()
 }
 
 #[tauri::command]
-fn open_settings(app: AppHandle) {
-    if let Some(win) = app.get_webview_window("settings") {
-        apply_webview_memory_policy(&win, false);
-        let _ = win.show();
-        let _ = win.set_focus();
-        return;
-    }
-    if let Ok(win) = WebviewWindowBuilder::new(&app, "settings", WebviewUrl::App("index.html?view=settings".into()))
-        .title("Anti-Bar Settings")
-        .inner_size(940.0, 660.0)
-        .resizable(true)
-        .additional_browser_args(BROWSER_ARGS)
-        .center()
-        .build()
-    {
-        apply_webview_memory_policy(&win, false);
-        let win_clone = win.clone();
-        win.on_window_event(move |event| match event {
-            tauri::WindowEvent::Resized(_) => {
-                let minimized = win_clone.is_minimized().unwrap_or(false);
-                apply_webview_memory_policy(&win_clone, minimized);
-                if minimized {
-                    dock_win::trim_process_tree_memory();
-                }
-            }
-            tauri::WindowEvent::Destroyed => {
-                std::thread::spawn(|| {
-                    std::thread::sleep(std::time::Duration::from_millis(200));
-                    dock_win::trim_process_tree_memory();
-                });
-            }
-            _ => {}
-        });
-    }
-}
-
-#[tauri::command]
-fn toggle_spotlight(app: AppHandle) {
-    if let Some(win) = app.get_webview_window("spotlight") {
-        if win.is_visible().unwrap_or(false) {
-            hide_spotlight(app);
-        } else {
+async fn open_settings(app: AppHandle) {
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        if let Some(win) = app.get_webview_window("settings") {
             apply_webview_memory_policy(&win, false);
-            let _ = win.center();
             let _ = win.show();
             let _ = win.set_focus();
-            let _ = app.emit("antibar://spotlight-opened", ());
+            return;
         }
-        return;
-    }
-    if let Ok(win) = WebviewWindowBuilder::new(&app, "spotlight", WebviewUrl::App("index.html?view=spotlight".into()))
-        .title("Anti-Bar Spotlight")
-        .inner_size(640.0, 440.0)
-        .decorations(false)
-        .transparent(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .resizable(false)
-        .additional_browser_args(BROWSER_ARGS)
-        .center()
-        .build()
-    {
-        apply_webview_memory_policy(&win, false);
-        let _ = win.set_focus();
-    }
+        if let Ok(win) = WebviewWindowBuilder::new(&app, "settings", WebviewUrl::App("index.html?view=settings".into()))
+            .title("Anti-Bar Settings")
+            .inner_size(940.0, 660.0)
+            .resizable(true)
+            .additional_browser_args(BROWSER_ARGS)
+            .center()
+            .build()
+        {
+            apply_webview_memory_policy(&win, false);
+            let win_clone = win.clone();
+            win.on_window_event(move |event| match event {
+                tauri::WindowEvent::Resized(_) => {
+                    let minimized = win_clone.is_minimized().unwrap_or(false);
+                    apply_webview_memory_policy(&win_clone, minimized);
+                    if minimized {
+                        dock_win::trim_process_tree_memory();
+                    }
+                }
+                tauri::WindowEvent::Destroyed => {
+                    std::thread::spawn(|| {
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                        dock_win::trim_process_tree_memory();
+                    });
+                }
+                _ => {}
+            });
+        }
+    })
+    .await;
+}
+
+pub fn spawn_toggle_spotlight(app: AppHandle) {
+    tauri::async_runtime::spawn(toggle_spotlight(app));
+}
+
+#[tauri::command]
+async fn toggle_spotlight(app: AppHandle) {
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        if let Some(win) = app.get_webview_window("spotlight") {
+            if win.is_visible().unwrap_or(false) {
+                hide_spotlight(app);
+            } else {
+                apply_webview_memory_policy(&win, false);
+                let _ = win.center();
+                let _ = win.show();
+                let _ = win.set_focus();
+                let _ = app.emit("antibar://spotlight-opened", ());
+            }
+            return;
+        }
+        if let Ok(win) = WebviewWindowBuilder::new(&app, "spotlight", WebviewUrl::App("index.html?view=spotlight".into()))
+            .title("Anti-Bar Spotlight")
+            .inner_size(640.0, 440.0)
+            .decorations(false)
+            .transparent(true)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .resizable(false)
+            .additional_browser_args(BROWSER_ARGS)
+            .center()
+            .build()
+        {
+            apply_webview_memory_policy(&win, false);
+            let _ = win.set_focus();
+        }
+    })
+    .await;
 }
 
 #[tauri::command]
@@ -371,26 +455,15 @@ fn hide_spotlight(app: AppHandle) {
 
 #[tauri::command]
 fn resize_overlay(app: AppHandle, state: State<AppState>, label: String, width: f64, height: f64) {
-    let taskbar_hidden = lock_recover(&state.config).hide_windows_taskbar;
+    if label == "dock" {
+        let taskbar_hidden = lock_recover(&state.config).hide_windows_taskbar;
+        apply_dock_geometry(&app, Some(width), Some(height), taskbar_hidden);
+        return;
+    }
     let app_for_main = app.clone();
     let _ = app.run_on_main_thread(move || {
         if let Some(win) = app_for_main.get_webview_window(&label) {
-            if label == "dock" {
-                if let Ok(Some(mon)) = win.primary_monitor() {
-                    let scale = mon.scale_factor();
-                    let (left, top, area_w, area_h) = if taskbar_hidden {
-                        let p = mon.position();
-                        let s = mon.size();
-                        (p.x as f64 / scale, p.y as f64 / scale, s.width as f64 / scale, s.height as f64 / scale)
-                    } else {
-                        let wa = mon.work_area();
-                        (wa.position.x as f64 / scale, wa.position.y as f64 / scale, wa.size.width as f64 / scale, wa.size.height as f64 / scale)
-                    };
-                    let (x, y, cw, ch) = compute_bottom_center_rect(left, top, area_w, area_h, width, height);
-                    let _ = win.set_size(tauri::LogicalSize::new(cw, ch));
-                    let _ = win.set_position(tauri::LogicalPosition::new(x, y));
-                }
-            } else if label == "notch" {
+            if label == "notch" {
                 let cw = width.max(120.0);
                 let ch = height.max(32.0);
                 let _ = win.set_size(tauri::LogicalSize::new(cw, ch));
@@ -402,14 +475,62 @@ fn resize_overlay(app: AppHandle, state: State<AppState>, label: String, width: 
     });
 }
 
-fn reposition_dock(app: &AppHandle, taskbar_hidden: bool) {
-    if let Some(dock) = app.get_webview_window("dock") {
-        let (w, h) = match (dock.inner_size(), dock.scale_factor()) {
-            (Ok(sz), Ok(scale)) if scale > 0.0 => (sz.width as f64 / scale, sz.height as f64 / scale),
-            _ => (860.0, 118.0),
-        };
-        position_bottom_center(&dock, w, h, taskbar_hidden);
-    }
+/// Computes Dock `(x, y, width, height)` using full monitor bounds when `hide_windows_taskbar` is true,
+/// or `work_area` bounds when false. `show_dock_clock` affects width only and never alters Y.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_dock_bounds(
+    mon_rect: (f64, f64, f64, f64),
+    wa_rect: (f64, f64, f64, f64),
+    width: f64,
+    height: f64,
+    hide_windows_taskbar: bool,
+    _show_dock_clock: bool,
+) -> (f64, f64, f64, f64) {
+    let (left, top, area_w, area_h) = if hide_windows_taskbar { mon_rect } else { wa_rect };
+    compute_bottom_center_rect(left, top, area_w, area_h, width, height)
+}
+
+fn apply_dock_geometry(
+    app: &AppHandle,
+    target_w: Option<f64>,
+    target_h: Option<f64>,
+    taskbar_hidden: bool,
+) {
+    let app_for_main = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(dock) = app_for_main.get_webview_window("dock") {
+            let (w, h) = match (target_w, target_h) {
+                (Some(w), Some(h)) => (w, h),
+                _ => match (dock.inner_size(), dock.scale_factor()) {
+                    (Ok(sz), Ok(scale)) if scale > 0.0 => (sz.width as f64 / scale, sz.height as f64 / scale),
+                    _ => (860.0, 108.0),
+                },
+            };
+            if let Ok(Some(mon)) = dock.primary_monitor() {
+                let scale = mon.scale_factor();
+                let p = mon.position();
+                let s = mon.size();
+                let wa = mon.work_area();
+                let mon_rect = (
+                    p.x as f64 / scale,
+                    p.y as f64 / scale,
+                    s.width as f64 / scale,
+                    s.height as f64 / scale,
+                );
+                let wa_rect = (
+                    wa.position.x as f64 / scale,
+                    wa.position.y as f64 / scale,
+                    wa.size.width as f64 / scale,
+                    wa.size.height as f64 / scale,
+                );
+                let (x, y, cw, ch) = compute_dock_bounds(mon_rect, wa_rect, w, h, taskbar_hidden, false);
+                if target_w.is_some() && target_h.is_some() {
+                    let _ = dock.set_size(tauri::LogicalSize::new(cw, ch));
+                }
+                let _ = dock.set_position(tauri::LogicalPosition::new(x, y));
+            }
+        }
+    });
 }
 
 fn sync_notch_window(app: &AppHandle, enabled: bool) {
@@ -475,37 +596,6 @@ fn position_top_center(win: &tauri::WebviewWindow, width: f64) {
     }
 }
 
-fn position_bottom_center(
-    win: &tauri::WebviewWindow,
-    width: f64,
-    height: f64,
-    taskbar_hidden: bool,
-) {
-    if let Ok(Some(mon)) = win.primary_monitor() {
-        let scale = mon.scale_factor();
-        let (left, top, area_w, area_h) = if taskbar_hidden {
-            let pos = mon.position();
-            let size = mon.size();
-            (
-                pos.x as f64 / scale,
-                pos.y as f64 / scale,
-                size.width as f64 / scale,
-                size.height as f64 / scale,
-            )
-        } else {
-            let wa = mon.work_area();
-            (
-                wa.position.x as f64 / scale,
-                wa.position.y as f64 / scale,
-                wa.size.width as f64 / scale,
-                wa.size.height as f64 / scale,
-            )
-        };
-        let (x, y, _, _) = compute_bottom_center_rect(left, top, area_w, area_h, width, height);
-        let _ = win.set_position(tauri::LogicalPosition::new(x, y));
-    }
-}
-
 #[cfg(windows)]
 fn start_hotkey_listener(app: AppHandle) {
     std::thread::spawn(move || {
@@ -529,7 +619,7 @@ fn start_hotkey_listener(app: AppHandle) {
             let mut msg = MSG::default();
             while GetMessageW(&mut msg, None, 0, 0).as_bool() {
                 if msg.message == WM_HOTKEY {
-                    toggle_spotlight(app.clone());
+                    spawn_toggle_spotlight(app.clone());
                 }
             }
             let _ = UnregisterHotKey(None, HK_ALT_SPACE);
@@ -654,6 +744,14 @@ pub fn run() {
         m
     };
 
+    dock_win::restore_taskbar_if_orphaned();
+
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        dock_win::restore_taskbar_if_hidden();
+        prev_hook(info);
+    }));
+
     let _taskbar_restore_guard = TaskbarRestoreGuard;
 
     let initial_cfg = load_config();
@@ -716,9 +814,9 @@ pub fn run() {
 
             dock_win::set_windows_taskbar_hidden(hide_taskbar_on_start);
             if let Some(dock) = app.get_webview_window("dock") {
-                position_bottom_center(&dock, 860.0, 108.0, hide_taskbar_on_start);
                 apply_webview_memory_policy(&dock, false);
             }
+            apply_dock_geometry(&handle, Some(860.0), Some(108.0), hide_taskbar_on_start);
             sync_notch_window(&handle, show_notch);
             win_hook::set_win_key_hook_enabled(&handle, enable_win_hook);
             native_ui::sync_native_widgets(&cfg_for_widgets);
@@ -745,8 +843,12 @@ pub fn run() {
                 ],
             )?;
 
+            let tray_icon = app
+                .default_window_icon()
+                .cloned()
+                .ok_or_else(|| tauri::Error::AssetNotFound("default window icon".into()))?;
             let _tray = TrayIconBuilder::new()
-                .icon(app.default_window_icon().unwrap().clone())
+                .icon(tray_icon)
                 .menu(&menu)
                 .tooltip("Anti-Bar")
                 .on_menu_event(|app, event| match event.id.as_ref() {
@@ -772,10 +874,12 @@ pub fn run() {
                         let _ = save_config(&updated);
                         let _ = app.emit("antibar://config-changed", &updated);
                         dock_win::set_windows_taskbar_hidden(updated.hide_windows_taskbar);
-                        reposition_dock(app, updated.hide_windows_taskbar);
+                        apply_dock_geometry(app, None, None, updated.hide_windows_taskbar);
                     }
-                    "spotlight" => toggle_spotlight(app.clone()),
-                    "settings" => open_settings(app.clone()),
+                    "spotlight" => spawn_toggle_spotlight(app.clone()),
+                    "settings" => {
+                        tauri::async_runtime::spawn(open_settings(app.clone()));
+                    }
                     "quit" => {
                         dock_win::restore_taskbar_if_hidden();
                         app.exit(0);

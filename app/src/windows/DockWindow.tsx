@@ -246,30 +246,34 @@ export function DockWindow() {
     setPopover(resolved);
     setHoveredIdx(null);
     setPreviewData(null);
-    if (resolved === "downloads") {
-      setDownloads(await invoke<DownloadEntry[]>("get_downloads"));
-    } else if (resolved === "mixer") {
-      const [sess, outs] = await Promise.all([
-        invoke<AudioSessionInfo[]>("get_audio_sessions"),
-        invoke<AudioOutputDevice[]>("get_audio_outputs"),
-      ]);
-      setAudioSessions(sess);
-      setAudioOutputs(outs);
-    } else if (resolved === "control") {
-      setWifiNets(await invoke<WifiNetwork[]>("get_wifi_networks"));
-      setSysStatus(await invoke<SystemStatus>("get_system_status"));
-    } else if (resolved === "calendar") {
-      const snap = await invoke<NotificationsSnapshot>("get_notifications", { requestAccess: true }).catch(
-        (): NotificationsSnapshot => ({ status: "unsupported", items: [] })
-      );
-      setNotifications(snap);
-      if (config && isValidHttpsUrl(config.calendarIcsUrl)) {
-        invoke<IcsEvent[]>("fetch_ics_agenda", { url: config.calendarIcsUrl })
-          .then(setIcsEvents)
-          .catch(() => {});
-      } else {
-        setIcsEvents([]);
+    try {
+      if (resolved === "downloads") {
+        setDownloads(await invoke<DownloadEntry[]>("get_downloads"));
+      } else if (resolved === "mixer") {
+        const [sess, outs] = await Promise.all([
+          invoke<AudioSessionInfo[]>("get_audio_sessions"),
+          invoke<AudioOutputDevice[]>("get_audio_outputs"),
+        ]);
+        setAudioSessions(sess);
+        setAudioOutputs(outs);
+      } else if (resolved === "control") {
+        setWifiNets(await invoke<WifiNetwork[]>("get_wifi_networks"));
+        setSysStatus(await invoke<SystemStatus>("get_system_status"));
+      } else if (resolved === "calendar") {
+        const snap = await invoke<NotificationsSnapshot>("get_notifications", { requestAccess: true }).catch(
+          (): NotificationsSnapshot => ({ status: "unsupported", items: [] })
+        );
+        setNotifications(snap);
+        if (config && isValidHttpsUrl(config.calendarIcsUrl)) {
+          invoke<IcsEvent[]>("fetch_ics_agenda", { url: config.calendarIcsUrl })
+            .then(setIcsEvents)
+            .catch(() => {});
+        } else {
+          setIcsEvents([]);
+        }
       }
+    } catch (err) {
+      reportError(err);
     }
   };
 
@@ -335,7 +339,7 @@ export function DockWindow() {
               title="Close window"
               onClick={(e) => {
                 e.stopPropagation();
-                invoke("close_window", { hwnd: hoveredItem.hwnd });
+                invoke("close_window", { hwnd: hoveredItem.hwnd }).catch(reportError);
                 setHoveredIdx(null);
                 setPreviewData(null);
               }}
@@ -829,7 +833,7 @@ export function DockWindow() {
           />
         </button>
 
-        <button className="dock-item" onClick={() => invoke("open_settings")}>
+        <button className="dock-item" onClick={() => invoke("open_settings").catch(reportError)}>
           <span className="dock-tooltip">{STRINGS.settings}</span>
           <span className="dock-icon-box utility-tile" style={{ width: iconSize - 6, height: iconSize - 6 }}>
             <Settings size={18} />

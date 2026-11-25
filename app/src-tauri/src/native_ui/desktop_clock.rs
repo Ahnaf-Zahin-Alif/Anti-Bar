@@ -30,7 +30,7 @@ pub fn sync_clock_widget(cfg: &AppConfig) {
         top_offset: cfg.clock_top_offset.clamp(24, 320),
     };
     let lock = LAST_PARAMS.get_or_init(|| Mutex::new(None));
-    let mut guard = lock.lock().unwrap();
+    let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
     if guard.as_ref() == Some(&params) {
         return;
     }
@@ -139,7 +139,15 @@ fn spawn_or_update_clock_window(params: ClockWidgetParams) {
                     let _ = windows::Win32::Graphics::Gdi::ValidateRect(hwnd, None);
                     LRESULT(0)
                 }
-                WM_DESTROY => LRESULT(0),
+                WM_DESTROY => {
+                    CLOCK_HWND.store(0, Ordering::SeqCst);
+                    if let Some(cell) = DRAW_CACHE.get() {
+                        if let Ok(mut g) = cell.lock() {
+                            *g = None;
+                        }
+                    }
+                    LRESULT(0)
+                }
                 _ => DefWindowProcW(hwnd, msg, wparam, lparam),
             }
         }

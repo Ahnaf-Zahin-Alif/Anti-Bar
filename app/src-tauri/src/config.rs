@@ -14,16 +14,16 @@ pub struct PinnedApp {
     pub icon_data_url: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct MemoTodoItem {
     pub id: String,
     pub text: String,
     pub done: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct AgendaItem {
     pub id: String,
     pub date: String,
@@ -34,7 +34,7 @@ pub struct AgendaItem {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AppConfig {
-    pub language: String,             // "auto" | "en" | "id"
+    pub language: String,             // "en"
     pub theme: String,                // "dark" | "light"
     pub glass_material: String,       // "frosted" | "liquid" | "matte" | "classic"
     pub wallpaper_tint: bool,
@@ -43,7 +43,7 @@ pub struct AppConfig {
     pub magnification: f32,           // 1.0..1.65
     pub auto_hide_dock: bool,
     pub hide_in_fullscreen: bool,
-    pub hide_windows_taskbar: bool,   // opt-in, default false
+    pub hide_windows_taskbar: bool,   // default true (restored on exit)
     #[serde(default)]
     pub show_dock_clock: bool,        // optional clock + notifications pill in Dock
     pub genie_effect: bool,
@@ -83,7 +83,7 @@ impl Default for AppConfig {
             magnification: 1.38,
             auto_hide_dock: false,
             hide_in_fullscreen: true,
-            hide_windows_taskbar: false,
+            hide_windows_taskbar: true,
             show_dock_clock: false,
             genie_effect: true,
             use_win_key_for_launchpad: false,
@@ -193,7 +193,14 @@ pub fn sanitize_config(cfg: &mut AppConfig) {
 pub fn load_config() -> AppConfig {
     let path = config_path();
     let mut cfg = match fs::read_to_string(&path) {
-        Ok(raw) => serde_json::from_str::<AppConfig>(&raw).unwrap_or_default(),
+        Ok(raw) => match serde_json::from_str::<AppConfig>(&raw) {
+            Ok(parsed) => parsed,
+            Err(_) => {
+                let backup = path.with_extension("corrupt.json");
+                let _ = fs::write(&backup, &raw);
+                AppConfig::default()
+            }
+        },
         Err(_) => {
             let c = AppConfig::default();
             let _ = save_config(&c);
@@ -208,8 +215,14 @@ pub fn save_config(cfg: &AppConfig) -> Result<(), String> {
     let mut clean = cfg.clone();
     sanitize_config(&mut clean);
     let path = config_path();
+    let tmp = path.with_extension("json.tmp");
     let json = serde_json::to_string_pretty(&clean).map_err(|e| e.to_string())?;
-    fs::write(path, json).map_err(|e| e.to_string())
+    fs::write(&tmp, json).map_err(|e| e.to_string())?;
+    if fs::rename(&tmp, &path).is_err() {
+        let _ = fs::remove_file(&path);
+        fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -223,7 +236,7 @@ mod tests {
         let parsed: AppConfig = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(parsed.icon_size, 48);
         assert_eq!(parsed.glass_material, "frosted");
-        assert!(!parsed.hide_windows_taskbar);
+        assert!(parsed.hide_windows_taskbar);
         assert!(!parsed.use_win_key_for_launchpad);
         assert_eq!(parsed.pinned_apps.len(), 4);
     }

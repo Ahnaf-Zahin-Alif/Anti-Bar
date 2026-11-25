@@ -39,7 +39,7 @@ pub struct WindowsNotificationItem {
     pub timestamp_ms: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NotificationsSnapshot {
     pub status: String,
@@ -53,7 +53,7 @@ pub struct LyricLine {
     pub text: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LyricsResult {
     pub found: bool,
@@ -122,7 +122,7 @@ pub fn read_current_media() -> MediaState {
             state.album = props.AlbumTitle().map(|s| s.to_string()).unwrap_or_default();
             let cache_key = format!("{}::{}::{}", state.title, state.artist, state.album);
             let cache = THUMB_CACHE.get_or_init(|| std::sync::Mutex::new((String::new(), None)));
-            let mut guard = cache.lock().unwrap();
+            let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
             if guard.0 == cache_key {
                 state.thumbnail_data_url = guard.1.clone();
             } else {
@@ -177,7 +177,8 @@ pub fn seek_media_position(position_sec: f64) -> Result<(), String> {
         .get()
         .map_err(|e| e.to_string())?;
     let session = mgr.GetCurrentSession().map_err(|e| e.to_string())?;
-    let ticks = (position_sec.max(0.0) * 10_000_000.0) as i64;
+    let safe_pos = clamp_seek_seconds(position_sec, f64::INFINITY);
+    let ticks = (safe_pos * 10_000_000.0) as i64;
     session
         .TryChangePlaybackPositionAsync(ticks)
         .map_err(|e| e.to_string())?
@@ -287,8 +288,8 @@ pub fn winhttp_get(host: &str, path_and_query: &str, accept: &str) -> Result<Str
     use windows::Win32::Networking::WinHttp::{
         WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest,
         WinHttpQueryDataAvailable, WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse,
-        WinHttpSendRequest, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_FLAG_SECURE,
-        WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE,
+        WinHttpSendRequest, WinHttpSetTimeouts, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+        WINHTTP_FLAG_SECURE, WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE,
     };
 
     if host.trim().is_empty() {
@@ -307,6 +308,7 @@ pub fn winhttp_get(host: &str, path_and_query: &str, accept: &str) -> Result<Str
         if session.is_null() {
             return Err("WinHttpOpen failed".into());
         }
+        let _ = WinHttpSetTimeouts(session, 3000, 4000, 4000, 6000);
 
         let res = (|| -> Result<String, String> {
             let h_host = HSTRING::from(host);
@@ -462,7 +464,7 @@ pub struct WifiNetwork {
     pub connected: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SystemStatus {
     pub battery_percent: u8,

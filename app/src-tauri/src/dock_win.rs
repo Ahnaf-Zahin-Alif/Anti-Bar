@@ -28,7 +28,7 @@ pub struct DownloadEntry {
     pub modified_ms: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrashInfo {
     pub items: i64,
@@ -377,8 +377,8 @@ pub fn toggle_window_hwnd(hwnd_val: isize) {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows::Win32::UI::WindowsAndMessaging::{
-        BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, IsIconic, IsWindow,
-        SetForegroundWindow, ShowWindow, SW_MINIMIZE, SW_RESTORE, SW_SHOW,
+        BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, IsHungAppWindow,
+        IsIconic, IsWindow, SetForegroundWindow, ShowWindow, SW_MINIMIZE, SW_RESTORE, SW_SHOW,
     };
 
     let hwnd = HWND(hwnd_val as *mut _);
@@ -396,7 +396,7 @@ pub fn toggle_window_hwnd(hwnd_val: isize) {
             let _ = ShowWindow(hwnd, SW_SHOW);
         }
 
-        let fg_tid = if !fg.0.is_null() {
+        let fg_tid = if !fg.0.is_null() && !IsHungAppWindow(fg).as_bool() {
             GetWindowThreadProcessId(fg, None)
         } else {
             0
@@ -414,11 +414,13 @@ pub fn toggle_window_hwnd(hwnd_val: isize) {
 #[cfg(windows)]
 pub fn close_window_hwnd(hwnd_val: isize) {
     use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-    use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+    use windows::Win32::UI::WindowsAndMessaging::{IsWindow, PostMessageW, WM_CLOSE};
 
     let hwnd = HWND(hwnd_val as *mut _);
     unsafe {
-        let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
+        if IsWindow(hwnd).as_bool() {
+            let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
+        }
     }
 }
 
@@ -703,12 +705,26 @@ pub fn empty_recycle_bin() -> Result<(), String> {
 static TASKBAR_HIDDEN_BY_US: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+type SavedWorkArea = (i32, i32, i32, i32);
+static ORIGINAL_WORK_AREA: OnceLock<Mutex<Option<SavedWorkArea>>> = OnceLock::new();
+
+fn taskbar_marker_path() -> std::path::PathBuf {
+    crate::config::app_data_dir().join(".taskbar_hidden")
+}
+
 #[cfg(windows)]
 pub fn set_windows_taskbar_hidden(hidden: bool) {
     use std::sync::atomic::Ordering;
-    use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows::core::w;
+    use windows::Win32::Foundation::{BOOL, HWND, LPARAM, POINT, RECT};
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, MONITORINFO,
+        MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY,
+    };
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetClassNameW, ShowWindow, SW_HIDE, SW_SHOWNA,
+        EnumWindows, FindWindowW, GetClassNameW, GetWindowRect, IsWindowVisible, IsZoomed,
+        SetWindowPos, ShowWindow, SystemParametersInfoW, SPIF_SENDCHANGE, SPI_GETWORKAREA,
+        SPI_SETWORKAREA, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOWNA,
     };
 
     unsafe extern "system" fn taskbar_enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
@@ -725,8 +741,113 @@ pub fn set_windows_taskbar_hidden(hidden: bool) {
     }
 
     TASKBAR_HIDDEN_BY_US.store(hidden, Ordering::SeqCst);
+    let marker = taskbar_marker_path();
+    if hidden {
+        let _ = fs::write(&marker, b"1");
+    } else {
+        let _ = fs::remove_file(&marker);
+    }
+
     unsafe {
+        if hidden {
+            let cell = ORIGINAL_WORK_AREA.get_or_init(|| Mutex::new(None));
+            if let Ok(mut guard) = cell.lock() {
+                if guard.is_none() {
+                    let mut cur_wa = RECT::default();
+                    if SystemParametersInfoW(
+                        SPI_GETWORKAREA,
+                        0,
+                        Some(&mut cur_wa as *mut RECT as *mut _),
+                        Default::default(),
+                    )
+                    .is_ok()
+                    {
+                        *guard = Some((cur_wa.left, cur_wa.top, cur_wa.right, cur_wa.bottom));
+                    }
+                }
+            }
+        }
+
         let _ = EnumWindows(Some(taskbar_enum_proc), LPARAM(if hidden { 1 } else { 0 }));
+
+        let mon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+        let mut mi = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if GetMonitorInfoW(mon, &mut mi).as_bool() {
+            if hidden {
+                let mut full = mi.rcMonitor;
+                let _ = SystemParametersInfoW(
+                    SPI_SETWORKAREA,
+                    0,
+                    Some(&mut full as *mut RECT as *mut _),
+                    SPIF_SENDCHANGE,
+                );
+            } else {
+                let saved = ORIGINAL_WORK_AREA
+                    .get_or_init(|| Mutex::new(None))
+                    .lock()
+                    .ok()
+                    .and_then(|mut g| g.take());
+                let mut restore = if let Some((l, t, r, b)) = saved {
+                    RECT { left: l, top: t, right: r, bottom: b }
+                } else {
+                    let mut fallback = mi.rcMonitor;
+                    if let Ok(tray) = FindWindowW(w!("Shell_TrayWnd"), None) {
+                        let mut tr = RECT::default();
+                        if !tray.0.is_null() && GetWindowRect(tray, &mut tr).is_ok() {
+                            let th = (tr.bottom - tr.top).clamp(32, 96);
+                            if tr.top >= fallback.bottom - 120 {
+                                fallback.bottom -= th;
+                            }
+                        }
+                    }
+                    fallback
+                };
+                let _ = SystemParametersInfoW(
+                    SPI_SETWORKAREA,
+                    0,
+                    Some(&mut restore as *mut RECT as *mut _),
+                    SPIF_SENDCHANGE,
+                );
+            }
+
+            unsafe extern "system" fn refit_zoomed_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+                if !IsWindowVisible(hwnd).as_bool() || !IsZoomed(hwnd).as_bool() {
+                    return BOOL(1);
+                }
+                let mut cls = [0u16; 64];
+                let len = GetClassNameW(hwnd, &mut cls);
+                let cname = String::from_utf16_lossy(&cls[..len as usize]);
+                if matches!(
+                    cname.as_str(),
+                    "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd"
+                ) {
+                    return BOOL(1);
+                }
+                let mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+                let mut m = MONITORINFO {
+                    cbSize: size_of::<MONITORINFO>() as u32,
+                    ..Default::default()
+                };
+                if GetMonitorInfoW(mon, &mut m).as_bool() {
+                    let use_full = lparam.0 != 0;
+                    let r = if use_full { m.rcMonitor } else { m.rcWork };
+                    let _ = SetWindowPos(
+                        hwnd,
+                        None,
+                        r.left,
+                        r.top,
+                        r.right - r.left,
+                        r.bottom - r.top,
+                        SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS,
+                    );
+                }
+                BOOL(1)
+            }
+            let _ = EnumWindows(Some(refit_zoomed_proc), LPARAM(if hidden { 1 } else { 0 }));
+        }
     }
 }
 
@@ -735,6 +856,12 @@ pub fn set_windows_taskbar_hidden(_hidden: bool) {}
 
 pub fn restore_taskbar_if_hidden() {
     if TASKBAR_HIDDEN_BY_US.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        set_windows_taskbar_hidden(false);
+    }
+}
+
+pub fn restore_taskbar_if_orphaned() {
+    if taskbar_marker_path().exists() {
         set_windows_taskbar_hidden(false);
     }
 }

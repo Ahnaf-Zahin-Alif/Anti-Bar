@@ -136,7 +136,7 @@ pub fn filter_spotlight_entries(
 /// Safe recursive-descent arithmetic evaluator supporting +, -, *, /, %, ^, and parentheses.
 pub fn eval_math_expr(input: &str) -> Option<f64> {
     let trimmed = input.trim();
-    if trimmed.is_empty() {
+    if trimmed.is_empty() || trimmed.len() > 256 {
         return None;
     }
     // Must contain at least one operator or parens so plain numbers aren't treated as calculations

@@ -92,7 +92,12 @@ export function NotchWindow() {
       setNowStr(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }));
     }, 10000);
 
+    const onBlur = () => {
+      if (!pinned) setExpanded(false);
+    };
+    window.addEventListener("blur", onBlur);
     return () => {
+      window.removeEventListener("blur", onBlur);
       clearInterval(clockTick);
       if (hoverTimerRef.current) window.clearTimeout(hoverTimerRef.current);
       unlistenMedia.then((u) => u());
@@ -233,7 +238,7 @@ export function NotchWindow() {
                 <button
                   className="icon-btn"
                   style={{ padding: 5 }}
-                  onClick={() => invoke("open_settings")}
+                  onClick={() => invoke("open_settings").catch(() => {})}
                   title="Settings"
                 >
                   <Settings size={13} />

@@ -20,7 +20,7 @@ export interface AgendaItem {
 }
 
 export interface AppConfig {
-  language: "auto" | "en" | "id" | string;
+  language: "en" | string;
   theme: "dark" | "light" | string;
   glassMaterial: "frosted" | "liquid" | "matte" | "classic" | string;
   wallpaperTint: boolean;

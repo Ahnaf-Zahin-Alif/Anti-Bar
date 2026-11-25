@@ -15,7 +15,7 @@ mod tests {
         let parsed: config::AppConfig = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(parsed.icon_size, 48);
         assert_eq!(parsed.glass_material, "frosted");
-        assert!(!parsed.hide_windows_taskbar);
+        assert!(parsed.hide_windows_taskbar);
         assert!(!parsed.use_win_key_for_launchpad);
         assert_eq!(parsed.pinned_apps.len(), 4);
     }
@@ -325,5 +325,51 @@ mod tests {
         if status.has_battery {
             assert!(status.battery_percent <= 100);
         }
+    }
+
+    #[test]
+    fn audit_batch3_edge_regressions() {
+        // 1. Huge/deeply-nested spotlight math (>256 chars) rejected cleanly without stack overflow
+        let deep = format!("{}1{}", "(".repeat(200), ")".repeat(200));
+        assert_eq!(spotlight::eval_math_expr(&deep), None);
+
+        // 2. Non-finite seek bounds clamped safely
+        assert_eq!(system_panels::clamp_seek_seconds(f64::NAN, 120.0), 0.0);
+        assert_eq!(system_panels::clamp_seek_seconds(f64::INFINITY, 120.0), 0.0);
+        assert_eq!(system_panels::clamp_seek_seconds(999.0, 120.0), 120.0);
+
+        // 3. Partial nested MemoTodoItem & AgendaItem deserialize cleanly with defaults
+        let partial_nested: config::AppConfig = serde_json::from_str(
+            r#"{"memoTodos":[{"text":"Hello"}],"agendaItems":[{"title":"Standup"}]}"#,
+        )
+        .expect("nested partial config");
+        assert_eq!(partial_nested.memo_todos[0].text, "Hello");
+        assert!(!partial_nested.memo_todos[0].done);
+        assert_eq!(partial_nested.agenda_items[0].title, "Standup");
+
+        // 4. .ics events sorted chronologically by dtstart
+        let ics = "BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART:20261201T090000\nSUMMARY:Later\nEND:VEVENT\nBEGIN:VEVENT\nDTSTART:20261125T080000\nSUMMARY:Earlier\nEND:VEVENT\nEND:VCALENDAR";
+        let sorted = native_ui::desktop_widgets::parse_ics_events(ics);
+        assert_eq!(sorted.len(), 2);
+        assert_eq!(sorted[0].summary, "Earlier");
+        assert_eq!(sorted[1].summary, "Later");
+    }
+
+    #[test]
+    fn audit_dock_y_all_taskbar_and_clock_combinations() {
+        let mon = (0.0, 0.0, 1920.0, 1080.0);
+        let wa = (0.0, 0.0, 1920.0, 1032.0);
+
+        let (_, y_ff, _, _) = anti_bar_lib::compute_dock_bounds(mon, wa, 540.0, 108.0, false, false);
+        let (_, y_ft, _, _) = anti_bar_lib::compute_dock_bounds(mon, wa, 650.0, 108.0, false, true);
+        let (_, y_tf, _, _) = anti_bar_lib::compute_dock_bounds(mon, wa, 540.0, 108.0, true, false);
+        let (_, y_tt, _, _) = anti_bar_lib::compute_dock_bounds(mon, wa, 650.0, 108.0, true, true);
+
+        // taskbar visible -> anchors to work_area bottom (1032 - 108 - 2 = 922) regardless of show_dock_clock
+        assert!((y_ff - 922.0).abs() < 1e-6);
+        assert!((y_ft - 922.0).abs() < 1e-6);
+        // taskbar hidden -> anchors to full monitor bottom (1080 - 108 - 2 = 970) regardless of show_dock_clock
+        assert!((y_tf - 970.0).abs() < 1e-6);
+        assert!((y_tt - 970.0).abs() < 1e-6);
     }
 }
